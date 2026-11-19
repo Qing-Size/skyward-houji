@@ -7,34 +7,19 @@ soc = { hans = "第三代骁龙®8移动平台", hant = "Snapdragon® 8 Gen 3 �
 os_version_prop = "ro.mi.os.version.incremental"
 
 [display]
-# persist.sys.miui_resolution in the odm partition's build.prop, which is
-# the n3 panel's own mode in the device tree.
+# n3 面板自身模式 (odm build.prop 的 persist.sys.miui_resolution), 上游 houji 实测值
 width = 1200
 height = 2670
 density = 480
 
 [modules]
 sources = ["vendor_boot", "vendor_dlkm", "vendor", "system_dlkm"]
-# The touchscreen: Synaptics TouchComm over SPI behind Xiaomi's touch
-# layer, the one touch driver the phone's own modules.load lists.
+# Synaptics TouchComm over SPI, 机型 modules.load 列出的唯一触摸驱动
 load = ["synaptics_tcm2"]
 
-# As on the 17 Ultra, no init script of the phone's starts touch_report:
-# the touch feature service turns the controller's raw frames into
-# touches with /odm/lib64/libtouchreport.so, and a recovery runs none of
-# it. Told through Xiaomi's touch layer, the driver has the controller
-# report positions itself; that is known of the 17 Ultra's Synaptics
-# controller and not yet tried on this phone's.
 [touch]
 writes = [{ path = "/sys/class/touch/touch_dev/enable_touch_raw", value = "0" }]
 
-# What the phone's own init runs once the system has finished starting, as
-# kernel-post-boot in /vendor/etc/init/hw/init.qti.kernel.rc. The kernel
-# starts the CPU clusters on the performance governor, which holds them at
-# their highest clock; the script hands them to WALT, lets idle CPUs power
-# down and sets how the memory bus scales. Without it the CPUs stay at
-# their highest clock and voltage even while idle, and the phone slowly
-# heats up.
 [[service]]
 path = "/vendor/bin/sh"
 args = ["/vendor/bin/init.kernel.post_boot.sh"]
@@ -43,21 +28,128 @@ oneshot = true
 user = "root"
 groups = ["root", "system", "wakelock", "graphics"]
 
-# WLAN: the kiwi node in the device tree, driven by qca_cld3_kiwi_v2, the
-# one WLAN driver the phone's own modules.blocklist leaves of those its
-# modules.load lists. Its cfg80211 asks for rfkill, one of the kernel's own
-# modules in system_dlkm, as the 17 Ultra's does. Its recovery covers the
-# vendor partition's firmware folder with the modem's, as the 13 Ultra's
-# does, so the settings and the MAC address are given to the loader again:
-# the settings from the vendor partition, the address from where the
-# vendor's link points in persist. wpa_supplicant runs on the recovery's
-# own libraries before the vendor partition's, as on the 17 Ultra.
+# 部分 bootloader 只拷贝定长 ramdisk 片段, cpio 尾部条目 (UI 字体/OMAPI)
+# 到不了内核; 从 payload.zip 把 restore.sh 铺回去。不命中的机器跑一下就跳过
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", 'R=/system/bin/recovery; if $R unzip /skyward/payload.zip skyward/restore.sh > /skyward/restore.sh.part; then mv /skyward/restore.sh.part /skyward/restore.sh; sh /skyward/restore.sh; else echo could not extract the restore; fi; rm -f /skyward/restore.sh.part; exit 0']
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# 给 key 服务链暂存 recovery 自带目录没有的库 (libhardware/libvndksupport/
+# libnetutils/bootstrap libdl), 写非隔离的 ld.config 和 km.sh 包装器。
+# 注: 源路径 /mnt/system/system/lib64 需在 houji 上验证 (见指南 §5)
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "mkdir -p /kmlibs && cp /mnt/system/system/lib64/libhardware.so /mnt/system/system/lib64/libvndksupport.so /mnt/system/system/lib64/libnetutils.so /mnt/system/system/lib64/bootstrap/libdl_android.so /kmlibs/ && printf '[recovery]\\nnamespace.default.isolated = false\\n' > /kmlibs/ld.config.txt && printf '#!/system/bin/sh\\nexport LD_CONFIG_FILE=/kmlibs/ld.config.txt\\nexec \"$@\"\\n' > /kmlibs/km.sh && chmod 755 /kmlibs/km.sh"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# 把运行内核签名的 rfkill.ko 铺到模块加载器找得到的地方 (flatten 目录
+# bind 覆盖, 或写 /lib/modules + modules.dep); 失败只丢 WiFi 不拖垮解密
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "V=$(ls -d /system_dlkm/lib/modules/*/kernel/net/rfkill 2>/dev/null | head -1); [ -n \"$V\" ] || { echo \"no rfkill.ko under /system_dlkm/lib/modules\"; exit 0; }; T=/system_dlkm/flatten/lib/modules/rfkill.ko; if [ -f \"$T\" ]; then mount --bind \"$V/rfkill.ko\" \"$T\" || { echo \"could not lay it over $T\"; exit 0; }; else mkdir -p /lib/modules || { echo \"could not make /lib/modules\"; exit 0; }; cp \"$V/rfkill.ko\" /lib/modules/rfkill.ko || { echo \"could not copy rfkill.ko\"; exit 0; }; printf 'rfkill.ko:\\n' > /lib/modules/modules.dep || { echo \"could not write modules.dep\"; exit 0; }; echo \"put the signed rfkill.ko in /lib/modules\"; fi"]
+oneshot = true
+user = "root"
+groups = ["root"]
+
+# 老式 credential 服务会一直找 recovery 没有的安全处理单元 (SPU) 而拒绝
+# 一切; 手机自己的 recovery 在启动它前关掉这个搜索 (骁龙 8Gen3 同款)
+[[service]]
+path = "/system/bin/sh"
+args = ["-c", "setprop vendor.gatekeeper.disable_spu true; setprop vendor.gatekeeper.is_security_level_spu 0; true"]
+oneshot = true
+user = "root"
+groups = ["root"]
+# 安全世界经此 daemon 注册的监听器回访 Android; key 服务等它就绪
+[[service]]
+path = "/vendor/bin/qseecomd"
+libraries = ["/vendor/lib64", "/vendor/lib64/hw", "/system/lib64", "/odm/lib64"]
+sockets = ["notify-topology"]
+ready_property = "vendor.sys.listeners.registered"
+user = "root"
+groups = ["root", "drmrpc"]
+
+# 安全服务网关 (TEE 回调它注册的系统服务)
+[[service]]
+path = "/vendor/bin/ssgtzd"
+libraries = ["/kmlibs", "/vendor/lib64", "/vendor/lib64/hw", "/system/lib64", "/odm/lib64"]
+sockets = ["ssgtzd", "ssgtzd_opener"]
+user = "root"
+groups = ["root", "system", "drmrpc"]
+capabilities = ["WAKE_ALARM", "BLOCK_SUSPEND"]
+
+# key 服务 (KeyMint): 硬件包裹密钥的唯一使用者。四个注册名必须全写,
+# 否则 service directory 拒收。必须在 qseecomd 之前无门启动且不设 ready
+# 门, 否则 qseecomd 监听器先抢走 applet, key 服务永远挂住
+[[service]]
+path = "/kmlibs/km.sh"
+args = ["/vendor/bin/hw/android.hardware.security.keymint-service-qti"]
+libraries = ["/kmlibs", "/vendor/lib64", "/vendor/lib64/hw", "/system/lib64", "/odm/lib64"]
+registers = [
+ "android.hardware.security.keymint.IKeyMintDevice/default",
+ "android.hardware.security.keymint.IRemotelyProvisionedComponent/default",
+ "android.hardware.security.secureclock.ISecureClock/default",
+ "android.hardware.security.sharedsecret.ISharedSecret/default",
+]
+user = "root"
+groups = ["root", "drmrpc"]
+
+# credential 服务 (Gatekeeper): 校验锁屏, 发放 key 服务用密钥前要的票据
+[[service]]
+path = "/kmlibs/km.sh"
+args = ["/vendor/bin/hw/android.hardware.gatekeeper-service-qti"]
+libraries = ["/kmlibs", "/vendor/lib64", "/vendor/lib64/hw", "/system/lib64", "/odm/lib64"]
+ready_service = "android.hardware.gatekeeper.IGatekeeper/default"
+# aurora 把 gatekeeper 描述写在 SoC manifest (pineapple) 而非 manifest 片段;
+# houji 同为 8Gen3 (pineapple), 沿用, 但需按指南 §5 在你的 ROM 里核实
+description = "/vendor/etc/vintf/manifest_pineapple.xml"
+user = "root"
+groups = ["root", "drmrpc"]
+
+# weaver: 锁屏秘密保存在的硬件槽。锁在槽里的机器解不开 /data 直到它应答。
+# optional: 没有/换名的构建只丢这条路径, 不丢解密 (aurora: tee/weaver 缺失自动跳过)
+[[service]]
+path = "/vendor/bin/hw/android.hardware.weaver-service.nxp"
+# 同一 HAL 在不同构建的分区/命名不同, 按存在与否选第一个, 不按安卓版本猜
+alternates = [
+ "/odm/bin/hw/android.hardware.weaver-service.nxp-qti",
+ "/vendor/bin/hw/android.hardware.weaver-service.nxp-qti",
+ "/vendor/bin/hw/android.hardware.weaver-service-nxp",
+ "/odm/bin/hw/android.hardware.weaver-service.nxp",
+]
+libraries = ["/kmlibs", "/vendor/lib64", "/vendor/lib64/hw", "/system/lib64", "/odm/lib64"]
+ready_service = "android.hardware.weaver.IWeaver/default"
+# 一个描述文本里折叠 weaver2/secure_element(SIM1/SIM2/eSE)/omapi 多个 HAL;
+# 不要拆成多个描述文件: publish_descriptions() 数文件个数, 个数变化会重启
+# service directory, aurora 的 ae 版就死在这次重启的 register_again 超时上
+description_text = 'android.hardware.weaver2IWeaver/defaultandroid.hardware.secure_element1ISecureElement/SIM1ISecureElement/SIM2ISecureElement/eSE1android.se.omapi1ISecureElementService/default'
+user = "root"
+groups = ["root", "drmrpc"]
+optional = true
+
+# boot control: 说 bootloader 下次启哪个槽。放最后, 没它手机照样能用
+[[service]]
+path = "/vendor/bin/hw/android.hardware.boot-service.qti"
+libraries = ["/system/lib64", "/vendor/lib64"]
+ready_service = "android.hardware.boot.IBootControl/default"
+user = "root"
+groups = ["root"]
+# OMAPI provider 服务 (/skyward/omapi/start.sh) 已省略: 其二进制是 aurora
+# 从 A14 TWRP 抓的专用产物, 且 aurora 注明自家解密不经它 (keymint/weaver 即可),
+# houji 上没有对应可信二进制 —— 除非验证发现 weaver 走 OMAPI, 否则不带。
+
+# WLAN: kiwi 节点 + qca_cld3_kiwi_v2 (houji 机型 modules.blocklist 唯一放行的
+# WLAN 驱动), cfg80211 要 system_dlkm 的 rfkill。值沿用上游 houji 实测配置
 [wlan]
 modules = ["rfkill", "qca_cld3_kiwi_v2"]
 writes = [{ path = "/sys/kernel/cnss/fs_ready", value = "1" }]
 firmware = [
-    { name = "wlan/qca_cld/kiwi_v2/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/kiwi_v2/WCNSS_qcom_cfg.ini" },
-    { name = "wlan/qca_cld/kiwi_v2/wlan_mac.bin", partition = "persist", path = "wlan/wlan_mac.bin" },
+ { name = "wlan/qca_cld/kiwi_v2/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/kiwi_v2/WCNSS_qcom_cfg.ini" },
+ { name = "wlan/qca_cld/kiwi_v2/wlan_mac.bin", partition = "persist", path = "wlan/wlan_mac.bin" },
 ]
 interface = "wlan0"
 supplicant = "/vendor/bin/hw/wpa_supplicant"
@@ -65,22 +157,31 @@ libraries = ["/system/lib64", "/vendor/lib64"]
 service = "android.hardware.wifi.supplicant.ISupplicant/default"
 probe = "http://connect.rom.miui.com/generate_204"
 
-# The update server the stock updater of the Chinese system asks.
+# 安全世界的应用小程序 (key/credential 服务要的固件) 在 modem 分区,
+# qseecomd 的监听器挂到 /vendor/firmware_mnt 才加载得到 (aurora 式, 移植必需)
+[firmware]
+partition = "modem"
+
+# 备份/刷包前挂 persist
+[partitions]
+mounted = ["persist"]
+
+# 手机身份: 基带设置与传感器标定。丢了丢信号丢标定, 任何 ROM 包都补不回
+[backup]
+efs = ["modemst1", "modemst2", "fsg", "fsc", "persist"]
+
+# 国内系统自带更新器问的更新服务器
 [update]
 server = "https://update.miui.com/updates/miotaV3.php"
 
-# The stock build the recovery is made on: the Chinese system's
-# OS3.0.307.0, whose full update package on the phone maker's own download
-# server holds the recovery partition the recovery is built on top of.
+# 本 recovery 所基于的原厂构建: 完整卡包里含作底的 recovery 分区镜像
+# (上游 houji 实测值, sha256 校验 recovery.img)
 [stock]
 version = "OS3.0.307.0.WNCCNXM"
 package = "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS3.0.307.0.WNCCNXM/houji-ota_full-OS3.0.307.0.WNCCNXM-user-16.0-8f4e9f2429.zip"
 recovery = "8a3362596aca1b340c7823a9b6667696b5e7cda3fbe32f910b868d16bcd90212"
 
-# qcom-hv-haptics (qcom,hv-haptics in its dtbo), whose driver says the
-# motor's resonant frequency as the 17 Ultra's does; the click is made from
-# samples at that frequency, and the strengths are the 17 Ultra's. Neither
-# is yet tried on this phone's motor.
+# qcom-hv-haptics: 马达谐振频率驱动报值, 点击按该频率采样合成
 [haptics]
 resonance = "/sys/class/qcom-haptics/lra_frequency_hz"
 strength = { lightest = 0.25, strongest = 0.75 }

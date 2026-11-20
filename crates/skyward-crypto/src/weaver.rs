@@ -117,9 +117,11 @@ const APPLET_WRONG_KEY: u8 = 0x7f;
 const APPLET_THROTTLE: u8 = 0x76;
 
 /// The command that reads slot `slot` with `key` from the applet itself,
-/// as NXP's libese_weaver frames it.
+/// as NXP's libese_weaver frames it: the slot's number and the key are the
+/// command's data, and the byte that follows them asks for as much as the
+/// applet has to say, holding no data and so counting in nothing.
 fn applet_read_command(slot: u32, key: &[u8]) -> Vec<u8> {
-    let mut command = vec![0x80, APPLET_READ, 0x00, 0x00, 1 + 4 + APPLET_KEY_BYTES as u8];
+    let mut command = vec![0x80, APPLET_READ, 0x00, 0x00, (4 + key.len()) as u8];
     command.extend_from_slice(&slot.to_be_bytes());
     command.extend_from_slice(key);
     command.push(0x00);
@@ -314,7 +316,7 @@ mod tests {
     #[test]
     fn the_applets_read_asks_the_slot_by_number_with_the_key() {
         let command = applet_read_command(3, &[7; 16]);
-        assert_eq!(&command[..5], &[0x80, APPLET_READ, 0x00, 0x00, 0x15], "the class, the instruction and how much data follows");
+        assert_eq!(&command[..5], &[0x80, APPLET_READ, 0x00, 0x00, 0x14], "the class, the instruction and how much data follows, the closing byte not counted");
         assert_eq!(&command[5..9], &3u32.to_be_bytes(), "the slot, the way the applet reads it");
         assert_eq!(&command[9..25], &[7; 16]);
         assert_eq!(command[25], 0x00, "the closing byte");

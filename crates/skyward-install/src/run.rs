@@ -963,11 +963,15 @@ fn backing_device(point: &str) -> Option<PathBuf> {
 /// Mark the block device behind a mount writable again, where mounting it
 /// read only left it so.
 fn set_writable(device: &Path) {
+    // _IO(0x12, 93), which the libc crate does not name for Android.
+    // bionic's ioctl request arg is a c_int, so the request is
+    // reinterpreted into it rather than widened.
+    const BLKROSET: u32 = 0x125d;
     let Ok(file) = File::open(device) else { return };
     let off: libc::c_int = 0;
     // SAFETY: the file is a block device open for reading, and BLKROSET
     // takes a pointer to the int that says whether it is read only.
-    unsafe { libc::ioctl(file.as_raw_fd(), libc::BLKROSET, &off) };
+    unsafe { libc::ioctl(file.as_raw_fd(), BLKROSET as libc::c_int, &off) };
 }
 
 /// A line one of the install script's outputs gave.

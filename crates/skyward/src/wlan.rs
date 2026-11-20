@@ -39,8 +39,10 @@ const HOME: &str = "/skyward/run/supplicant";
 const WIFI: u32 = 1010;
 
 /// How long the driver may take to make its interface, the chip's firmware
-/// loading meanwhile.
-const INTERFACE_WAIT: Duration = Duration::from_secs(20);
+/// loading meanwhile. The WLAN chip's own firmware is tens of megabytes read
+/// from the modem partition, and on the 14 the interface is seen well after
+/// half a minute, so the wait is generous rather than tight.
+const INTERFACE_WAIT: Duration = Duration::from_secs(60);
 
 /// How long the supplicant may take to open its control socket.
 const SOCKET_WAIT: Duration = Duration::from_secs(10);
@@ -628,26 +630,59 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
         for file in &cfg.firmware {
             place(file)?;
         }
-        for path in skyward_modules::load(modules, &cfg.modules)? {
-            skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
-        }
-        for w in &cfg.writes {
-            fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
-        }
-        let until = Instant::now() + INTERFACE_WAIT;
-        while !net.exists() {
-            ensure!(Instant::now() < until, "the driver made no {} in {} seconds", cfg.interface, INTERFACE_WAIT.as_secs());
-            thread::sleep(Duration::from_millis(100));
+        load_modules(cfg, modules)?;
+        if wait_interface(&net, INTERFACE_WAIT).is_err() {
+            // The chip's platform driver probes as it is loaded, and a
+            // recovery can reach it before its settings are written: cnss
+            // then gives up with "failed to probe host driver" and makes no
+            // interface. Now that the settings above are in place, take the
+            // driver out and give it another go.
+            for name in cfg.modules.iter().rev() {
+                unload(name);
+            }
+            load_modules(cfg, modules)?;
+            wait_interface(&net, INTERFACE_WAIT)?;
         }
     }
     iface::set_up(&cfg.interface, true)
 }
 
+/// Load the driver's modules with what they depend on, then write the
+/// switches its platform driver waits for.
+fn load_modules(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
+    for path in skyward_modules::load(modules, &cfg.modules)? {
+        skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
+    }
+    for w in &cfg.writes {
+        fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
+    }
+    Ok(())
+}
+
+/// Wait for the driver to make its interface, at most `wait`.
+fn wait_interface(net: &Path, wait: Duration) -> Result<()> {
+    let until = Instant::now() + wait;
+    while !net.exists() {
+        ensure!(
+            Instant::now() < until,
+            "the driver made no {} in {} seconds",
+            net.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            wait.as_secs()
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// Take a module out of the kernel by name, if it is in.
+fn unload(name: &str) {
+    let Ok(c) = std::ffi::CString::new(name) else { return };
+    // SAFETY: a NUL-terminated name and no flags, as delete_module asks.
+    unsafe { libc::syscall(libc::SYS_delete_module, c.as_ptr(), 0 as libc::c_uint) };
+}
+
 /// Put a file the driver asks for where the firmware loader looks.
 fn place(file: &Firmware) -> Result<()> {
-    let to = Path::new(FIRMWARE).join(&file.name);
-    let dir = to.parent().expect("a firmware file is in a folder");
-    fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     let bytes = match &file.partition {
         None => fs::read(&file.path).with_context(|| format!("read {}", file.path))?,
         Some(partition) => {
@@ -659,47 +694,75 @@ fn place(file: &Firmware) -> Result<()> {
             read?
         }
     };
+    // The recovery's own ueventd looks in /etc/firmware, which is writable.
+    write_firmware(Path::new(FIRMWARE), &file.name, &bytes)?;
+    // The phone's ueventd looks in the vendor firmware folder too, which is
+    // a read-only mount of the modem partition: tell it otherwise, and put
+    // the file there as well, so either loader finds it.
+    let vendor = Path::new("/vendor/firmware");
+    if vendor.is_dir() {
+        remount_rw(vendor);
+        let _ = write_firmware(vendor, &file.name, &bytes);
+    }
+    Ok(())
+}
+
+/// Let the recovery write to a read-only mount, if it can.
+fn remount_rw(target: &Path) {
+    let Ok(t) = std::ffi::CString::new(target.as_os_str().as_encoded_bytes()) else { return };
+    // SAFETY: a NUL-terminated mount point; MS_REMOUNT with no other flag
+    // keeps how it is mounted and only lifts the read-only bit.
+    unsafe {
+        libc::mount(
+            std::ptr::null(),
+            t.as_ptr(),
+            std::ptr::null(),
+            libc::MS_REMOUNT as libc::c_ulong,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
+fn write_firmware(base: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    let to = base.join(name);
+    let dir = to.parent().expect("a firmware file is in a folder");
+    fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))
 }
 
 /// Start the supplicant on the interface, and wait for its control socket.
 fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
+    let home = Path::new(HOME);
+    let sockets = home.join("sockets");
+    fs::create_dir_all(&sockets).with_context(|| format!("make {}", sockets.display()))?;
+    fs::set_permissions(home, fs::Permissions::from_mode(0o755)).with_context(|| format!("open {} to the supplicant", home.display()))?;
+    std::os::unix::fs::chown(&sockets, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", sockets.display()))?;
+    fs::set_permissions(&sockets, fs::Permissions::from_mode(0o755)).with_context(|| format!("keep {} to the supplicant", sockets.display()))?;
+
     // Android 的 wpa_supplicant 启动时会自动加载 /vendor/etc/wifi/wpa_supplicant.conf
     // 作为 overlay conf，里面强制 pmf=1。绝大多数 WPA2-only 的 AP 不支持 PMF 协商，
     // wpa_supplicant 拿到 pmf=1 后 association 直接被 AP 拒掉（status 停在 0000），
     // 退不回纯 WPA2。Skyward 自己写的 conf 里的 pmf=0 会被 vendor 的 pmf=1 覆盖
     // ——wpa_supplicant 加载多个 conf 时后面的覆盖前面的。
     //
-    // 我们的办法：在启动 supplicant 前，把 vendor conf 复制到可写目录、改掉 pmf=1、
-    // 再 bind mount 回去。erofs 只读分区本身无法写，但 bind mount 在 recovery 里
-    // 完全可行（需要 root 权限）。
-    let home = Path::new(HOME);
+    // 办法：把 vendor conf 复制到可写目录、改掉 pmf=1、再 bind mount 回去。
+    // erofs 只读分区本身无法写，但 bind mount 在 recovery 里完全可行（需要 root）。
     let vendor_conf = Path::new("/vendor/etc/wifi/wpa_supplicant.conf");
-    if vendor_conf.exists() {
-        let ours = home.join("wpa_vendor_fix.conf");
-        let bytes = fs::read(vendor_conf)
-            .with_context(|| format!("read {}", vendor_conf.display()))?;
-        let mut fixed = String::from_utf8_lossy(&bytes).to_string();
-        if fixed.contains("pmf=1") {
-            fixed = fixed.replace("pmf=1", "pmf=0");
-            fs::write(&ours, &fixed)
-                .with_context(|| format!("write {}", ours.display()))?;
-            // 尝试 bind mount；失败也不要中止，recovery 里 mount 有时需要重试。
-            let _ = Process::new("mount")
-                .args(["--bind", ours.to_string_lossy().as_ref(), vendor_conf.to_string_lossy().as_ref()])
-                .status();
+    if vendor_conf.is_file()
+        && let Ok(bytes) = fs::read(vendor_conf)
+    {
+        let fixed = String::from_utf8_lossy(&bytes).replace("pmf=1", "pmf=0");
+        if fixed != String::from_utf8_lossy(&bytes) {
+            let ours = home.join("wpa_vendor_fix.conf");
+            fs::write(&ours, &fixed).with_context(|| format!("write {}", ours.display()))?;
+            if let Err(e) = bind_mount(&ours, vendor_conf) {
+                // 失败也不中止：supplicant 仍可启动，只是 pmf 可能被 vendor 覆盖。
+                let _ = skyward_sys::kmsg(&format!("could not cover {}: {e:#}", vendor_conf.display()));
+            }
         }
     }
 
-    let sockets = home.join("sockets");
-    fs::create_dir_all(&sockets).with_context(|| format!("make {}", sockets.display()))?;
-    fs::set_permissions(home, fs::Permissions::from_mode(0o755)).with_context(|| format!("open {} to the supplicant", home.display()))?;
-    std::os::unix::fs::chown(&sockets, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", sockets.display()))?;
-    fs::set_permissions(&sockets, fs::Permissions::from_mode(0o770)).with_context(|| format!("keep {} to the supplicant", sockets.display()))?;
     let settings = home.join("wpa_supplicant.conf");
-    // wpa_supplicant 在 Android 上会同时加载 /vendor/etc/wifi/wpa_supplicant.conf
-    // 作为 overlay，里面自带 pmf=1。我们必须显式写 pmf=0 才能覆盖它——否则 WPA2-only
-    // 的 AP 会在 PMF 协商失败后直接拒 association，status 永远停在 0000。
     fs::write(&settings, format!("ctrl_interface={}\nupdate_config=0\np2p_disabled=1\npmf=0\nsae_pwe=2\n", sockets.display()))
         .with_context(|| format!("write {}", settings.display()))?;
     fs::set_permissions(&settings, fs::Permissions::from_mode(0o644)).with_context(|| format!("open {} to the supplicant", settings.display()))?;
@@ -734,6 +797,31 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
         thread::sleep(Duration::from_millis(100));
     }
     Ok(child)
+}
+
+/// Show `source` at `target`, leaving what is under `target` untouched.
+fn bind_mount(source: &Path, target: &Path) -> Result<()> {
+    let cstring = |p: &Path| {
+        std::ffi::CString::new(p.as_os_str().as_encoded_bytes())
+            .with_context(|| format!("{} holds a NUL", p.display()))
+    };
+    let (s, t) = (cstring(source)?, cstring(target)?);
+    // SAFETY: both are NUL-terminated paths; a bind mount takes no filesystem
+    // type, flags beyond MS_BIND, or data.
+    let rc = unsafe {
+        libc::mount(
+            s.as_ptr(),
+            t.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND as libc::c_ulong,
+            std::ptr::null_mut(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("bind mount {} over {}", source.display(), target.display()));
+    }
+    Ok(())
 }
 
 /// End the supplicant: asked to, where it can be, and killed after a while.

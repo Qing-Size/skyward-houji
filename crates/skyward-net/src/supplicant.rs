@@ -176,10 +176,12 @@ pub fn network_commands(id: u32, ssid: &[u8], security: Security, password: &str
             commands.push(set("ieee80211w", "2".into()));
         }
         Security::PskSae => {
+            // 混合 WPA2/WPA3 网络：SAE 会在需要时自己跟 AP 协商 11w，
+            // 不要在 config 层硬塞 ieee80211w=1，否则 WPA2-only 的 AP
+            // 会拒掉 association。
             commands.push(set("key_mgmt", "WPA-PSK WPA-PSK-SHA256 SAE".into()));
             commands.push(set("psk", psk()?));
             commands.push(set("sae_password", hex::encode(password)));
-            commands.push(set("ieee80211w", "1".into()));
         }
         Security::Wep | Security::Enterprise => bail!("the recovery does not join a network protected so"),
     }

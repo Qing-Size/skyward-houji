@@ -671,7 +671,10 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     std::os::unix::fs::chown(&sockets, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", sockets.display()))?;
     fs::set_permissions(&sockets, fs::Permissions::from_mode(0o770)).with_context(|| format!("keep {} to the supplicant", sockets.display()))?;
     let settings = home.join("wpa_supplicant.conf");
-    fs::write(&settings, format!("ctrl_interface={}\nupdate_config=0\np2p_disabled=1\npmf=1\nsae_pwe=2\n", sockets.display()))
+    // pmf=1（optional PMF）在很多 WPA2-only 路由器上会让关联直接被 AP 拒掉：
+    // PMF 协商失败，wpa_supplicant 退不回纯 WPA2，status 停在 0000。关掉 PMF 让
+    // 路由器和 supplicant 自己决定是否支持；SAE（WPA3）会自己带 ieee80211w。
+    fs::write(&settings, format!("ctrl_interface={}\nupdate_config=0\np2p_disabled=1\nsae_pwe=2\n", sockets.display()))
         .with_context(|| format!("write {}", settings.display()))?;
     fs::set_permissions(&settings, fs::Permissions::from_mode(0o644)).with_context(|| format!("open {} to the supplicant", settings.display()))?;
     let socket = sockets.join(&cfg.interface);

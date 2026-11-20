@@ -154,14 +154,18 @@ pub fn read_through_element(binder: &skyward_binder::driver::Binder, slot: u32, 
     anyhow::ensure!(key.len() == APPLET_KEY_BYTES, "a weaver key is {APPLET_KEY_BYTES} bytes, not {}", key.len());
     let name = embedded_element(binder)?;
     let element = Element::find(binder, &name)?.with_context(|| format!("nothing has registered the secure element {name}"))?;
-    // The applet is selected by a command on the basic channel, which is
-    // the one the chip has open once it is powered up: a read may be
-    // asked again after a wrong credential, so nothing here has to be
-    // opened anew each time.
-    let command = select(&APPLET, 0, false).expect("the basic channel has a number");
-    let answer = element.transmit(&command).context("select the weaver's applet")?;
-    if selected(&answer) != Selected::Another {
-        bail!("the weaver's applet is not there: it answered the select with {answer:02x?}");
+    // The service lets commands reach the chip only down a channel it has
+    // opened: the basic channel is opened here, as the chip is asked for
+    // its applet. The service keeps that channel open for as long as it
+    // runs, and refuses to open it a second time, so a read asked again
+    // after a wrong credential selects the applet by a command down the
+    // channel that is there already.
+    if let Err(why) = element.open_basic(&APPLET, 0x00) {
+        let command = select(&APPLET, 0, false).expect("the basic channel has a number");
+        let answer = element.transmit(&command).with_context(|| format!("select the weaver's applet, which the basic channel would not be opened on ({why:?})"))?;
+        if selected(&answer) != Selected::Another {
+            bail!("the weaver's applet is not there: it answered the select with {answer:02x?}");
+        }
     }
     let answer = element.transmit(&applet_read_command(slot, key)).with_context(|| format!("read slot {slot} of the weaver's applet"))?;
     applet_value(&answer)

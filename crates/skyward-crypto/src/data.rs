@@ -494,8 +494,11 @@ fn open_user_files(service: &KeyMint, user: u32, credential: Option<&[u8]>, owne
                 // itself instead.
                 Err(no_weaver) => {
                     let key = crate::user::weaver_key(&stretched, crate::weaver::APPLET_KEY_BYTES)?;
+                    // The reason the applet gave is put in the message
+                    // itself: a screen that shows only the first line of
+                    // an error says nothing else of it.
                     crate::weaver::read_through_element(&binder, *slot, &key)
-                        .with_context(|| format!("no weaver is running to ask ({no_weaver:#}), and its applet does not answer"))?
+                        .map_err(|e| anyhow::anyhow!("no weaver is running to ask ({no_weaver:#}), and its applet does not answer: {e:#}"))?
                 }
             };
             (crate::user::weaver_protector_secret(&stretched, &value), None)

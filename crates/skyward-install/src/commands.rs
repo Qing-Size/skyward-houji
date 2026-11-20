@@ -127,8 +127,7 @@ fn copy_while_writing(from: &mut dyn Read, mut to: File) -> Result<u64, Failed> 
             Ok(written)
         });
         let mut failed = None;
-        'read: loop {
-            let Ok(mut buf) = free_rx.recv() else { break };
+        'read: while let Ok(mut buf) = free_rx.recv() {
             let read = loop {
                 match from.read(&mut buf) {
                     Ok(read) => break read,

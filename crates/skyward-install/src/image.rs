@@ -385,8 +385,7 @@ fn write_while_reading<R: Read>(
         });
         let mut done = 0u64;
         let mut failure = None;
-        loop {
-            let Ok(mut buf) = free_rx.recv() else { break };
+        while let Ok(mut buf) = free_rx.recv() {
             let n = match fill(&mut image, &mut buf) {
                 Ok(0) => break,
                 Ok(n) => n,

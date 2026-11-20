@@ -49,9 +49,24 @@ const RETRY: &str = "retry";
 
 /// Scripts written for other recoveries start with the shell they find
 /// here, and look for programs where those recoveries keep them.
-const SBIN_SHELL: &str = "/sbin/sh";
+const SBIN: &str = "/sbin";
+/// The names a zip's install script may give its shell in the first line:
+/// recoveries keep a bash, and a script that runs the same words anyway.
+const SBIN_SHELLS: [&str; 3] = ["sh", "bash", "mksh"];
 const SHELL: &str = "/system/bin/sh";
 const SCRIPT_PATH: &str = "/sbin:/system/bin:/system/xbin";
+
+/// The 7-Zip command line as a zip's install script may call it: the form
+/// that decompresses what comes on its input, which is a zstd frame here,
+/// goes to the recovery's zstd; the rest is the recovery's own.
+const SEVEN_ZIP_SHIM: &str = "#!/system/bin/sh
+for a in \"$@\"; do
+  case \"$a\" in
+    -si=*) exec /system/bin/zstd -d -c ;;
+  esac
+done
+exec /system/bin/7za \"$@\"
+";
 
 /// How long what an install script leaves running may keep its output open
 /// once the script has ended, before it is ended too; and after that, how
@@ -903,17 +918,36 @@ fn extract_script() -> Result<()> {
     out.set_permissions(fs::Permissions::from_mode(0o755)).with_context(|| format!("make {BINARY} runnable"))
 }
 
-/// Give scripts written for other recoveries the shell they start with.
+/// Give scripts written for other recoveries the shell they start with,
+/// and the 7-Zip command line they expect for an image piped through it.
+///
+/// A zip may name any of the shells in its first line, and the shell
+/// Skyward has runs what a bash script says; one that asks for a name it
+/// does not find is not started at all, the kernel unable to find its
+/// interpreter.
 fn shell_at_sbin() -> Result<()> {
-    let link = Path::new(SBIN_SHELL);
-    match fs::symlink_metadata(link) {
-        Ok(_) => return Ok(()),
-        Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("look at {SBIN_SHELL}")),
+    for name in SBIN_SHELLS {
+        let link = Path::new(SBIN).join(name);
+        match fs::symlink_metadata(&link) {
+            Ok(_) => continue,
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("look at {}", link.display())),
+        }
+        fs::create_dir_all(SBIN).with_context(|| format!("make {SBIN}"))?;
+        symlink(SHELL, &link).with_context(|| format!("link {} to {SHELL}", link.display()))?;
     }
-    let dir = link.parent().expect("the link is in a folder");
-    fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
-    symlink(SHELL, link).with_context(|| format!("link {SBIN_SHELL} to {SHELL}"))
+    // A zip may pipe a compressed image through the 7-Zip command line to
+    // decompress it, and the recovery's own takes only zips. Without this
+    // the pipeline would put nothing on the partition and the script would
+    // still say it finished.
+    if Path::new("/system/bin/7za").exists() {
+        let shim = Path::new(SBIN).join("7za");
+        if fs::symlink_metadata(&shim).is_err() {
+            fs::write(&shim, SEVEN_ZIP_SHIM).with_context(|| format!("write {}", shim.display()))?;
+            fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).with_context(|| format!("make {} runnable", shim.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// A line one of the install script's outputs gave.

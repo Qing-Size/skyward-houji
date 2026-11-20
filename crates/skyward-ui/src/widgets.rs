@@ -1668,6 +1668,7 @@ pub struct Reading {
 
 /// Account-style card: avatar, name and detail, the readings under the
 /// name, then optional rows. The first rect returned covers the name row.
+#[allow(clippy::too_many_arguments)]
 pub fn device_card(
     c: &mut Canvas,
     t: &Theme,

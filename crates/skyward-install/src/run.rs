@@ -22,7 +22,7 @@ use skyward_sys::{kmsg, prop};
 use skyward_vab::{Slot, SlotMaps, SnapshotState};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -793,7 +793,7 @@ fn lines(from: impl Read, mut each: impl FnMut(&str) -> io::Result<()>) -> io::R
     }
 }
 
-fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
+fn flash_image(ctx: &mut Context, kind: ImageKind, size: u64) -> Result<Done> {
     let dir = Path::new(skyward_block::BY_NAME);
     let partitions = image::partitions(kind, dir)?;
     if partitions.is_empty() {
@@ -807,18 +807,48 @@ fn flash_image(ctx: &Context, kind: ImageKind, size: u64) -> Result<Done> {
     };
     ensure!(partitions.contains(&partition), "{partition} is not among {partitions:?}");
     ensure!(!slots.is_empty(), "no slot chosen for {partition}");
+    // Writing super covers the logical partitions mapped from it, so what
+    // still runs off them moves away first.
+    if matches!(kind, ImageKind::Super { .. }) {
+        detach_once(ctx)?;
+    }
+    let mut told: Option<Instant> = None;
+    let mut progress = |done, total| {
+        if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
+            ctx.send(Event::Progress(Stage::Flashing { done, total }));
+            told = Some(Instant::now());
+        }
+    };
+    // A super image is the whole of its partition, and is written while it
+    // is decompressed, compressed or not, rather than into a copy of it.
+    if let ImageKind::Super { zstd } = kind {
+        let mut file = File::open(fuse::PACKAGE).context("open the package")?;
+        let expected = match zstd {
+            false => Some(size),
+            true => {
+                let mut head = [0u8; image::ZSTD_HEAD];
+                let read = file.read(&mut head).context("read the compressed image's first bytes")?;
+                file.seek(SeekFrom::Start(0)).context("rewind the package")?;
+                image::zstd_size(&head[..read])
+            }
+        };
+        let device = dir.join(partition);
+        match zstd {
+            false => image::flash_super(BufReader::with_capacity(1 << 20, file), &device, expected, &mut progress)?,
+            true => {
+                let image = zstd::stream::read::Decoder::with_buffer(BufReader::with_capacity(1 << 20, file))
+                    .context("decompress the image")?;
+                image::flash_super(image, &device, expected, &mut progress)?;
+            }
+        }
+        return Ok(Done::Decided(Outcome::Flashed { partition, slots: Vec::new() }));
+    }
     if [skyward_systems::store::BOOT, skyward_systems::store::INIT_BOOT].contains(&partition) {
         installed_boot_set()?;
     }
     let devices: Vec<_> = slots.iter().map(|&slot| image::device(dir, partition, slot)).collect();
     let mut file = BufReader::with_capacity(1 << 20, File::open(fuse::PACKAGE).context("open the package")?);
-    let mut told: Option<Instant> = None;
-    image::flash(&mut file, size, &devices, &mut |done, total| {
-        if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
-            ctx.send(Event::Progress(Stage::Flashing { done, total }));
-            told = Some(Instant::now());
-        }
-    })?;
+    image::flash(&mut file, size, &devices, &mut progress)?;
     Ok(Done::Decided(Outcome::Flashed { partition, slots }))
 }
 

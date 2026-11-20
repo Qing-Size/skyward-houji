@@ -5,18 +5,28 @@
 use abootimg_oxide::binrw::io::Cursor;
 use abootimg_oxide::binrw::BinRead;
 use abootimg_oxide::{Header, VendorHeader};
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
 use skyward_vab::Slot;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 
 const BOOT_MAGIC: &[u8] = b"ANDROID!";
 const VENDOR_BOOT_MAGIC: &[u8] = b"VNDRBOOT";
 /// A dtbo image starts with this, big-endian.
 const DTBO_MAGIC: &[u8] = &[0xd7, 0xb7, 0xab, 0x1e];
 const VBMETA_MAGIC: &[u8] = b"AVB0";
+/// A super image keeps the geometry of its metadata at this offset, marked
+/// by `LP_METADATA_GEOMETRY_MAGIC` after the partitions super was made for.
+const SUPER_GEOMETRY_AT: usize = 4096;
+const SUPER_MAGIC: &[u8] = &[0x67, 0x44, 0x6c, 0x61];
+/// A zstd frame's magic, and the descriptor after it, enough to read how
+/// much the frame holds.
+const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
+pub const ZSTD_HEAD: usize = 18;
 
 /// How a ramdisk is packed, by its first bytes: LZ4 in the legacy framing
 /// Android uses or the standard one, gzip, or a bare newc archive.
@@ -42,6 +52,8 @@ pub enum ImageKind {
     VendorBoot,
     Dtbo,
     Vbmeta,
+    /// A whole super partition, zstd-compressed where `zstd` says so.
+    Super { zstd: bool },
 }
 
 /// The ramdisk a boot image carries.
@@ -67,8 +79,51 @@ impl ImageKind {
             ImageKind::VendorBoot => &["vendor_boot"],
             ImageKind::Dtbo => &["dtbo"],
             ImageKind::Vbmeta => &["vbmeta", "vbmeta_system", "vbmeta_vendor"],
+            ImageKind::Super { .. } => &["super"],
         }
     }
+
+    /// Whether the partitions an image of this kind goes to have a slot
+    /// each. Super holds both slots in one partition.
+    pub fn slotted(self) -> bool {
+        !matches!(self, ImageKind::Super { .. })
+    }
+}
+
+/// Whether `head`, the first bytes of a super image, carries the geometry
+/// of its metadata where a super image keeps it.
+pub fn super_head(head: &[u8]) -> bool {
+    head.get(SUPER_GEOMETRY_AT..SUPER_GEOMETRY_AT + SUPER_MAGIC.len()) == Some(SUPER_MAGIC)
+}
+
+/// How many bytes a zstd frame holds, read from the frame header in
+/// `head`; none where the frame does not say, as when what was compressed
+/// came through a pipe.
+pub fn zstd_size(head: &[u8]) -> Option<u64> {
+    if !head.starts_with(ZSTD_MAGIC) {
+        return None;
+    }
+    let descriptor = *head.get(4)?;
+    let single = descriptor & 0x20 != 0;
+    let dictionary = match descriptor & 0x03 {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        _ => 4,
+    };
+    let (at, width, add) = match descriptor >> 6 {
+        0 if single => (5 + dictionary, 1, 0),
+        0 => return None,
+        1 => (5 + !single as usize + dictionary, 2, 256),
+        2 => (5 + !single as usize + dictionary, 4, 0),
+        _ => (5 + !single as usize + dictionary, 8, 0),
+    };
+    let bytes = head.get(at..at + width)?;
+    let mut size = 0u64;
+    for (i, byte) in bytes.iter().enumerate() {
+        size |= u64::from(*byte) << (8 * i);
+    }
+    Some(size + add)
 }
 
 /// The image `file` holds, from `head`, its first bytes, and for a boot
@@ -96,6 +151,9 @@ pub fn detect<R: Read + Seek>(file: &mut R, head: &[u8]) -> Result<Option<ImageK
     }
     if head.starts_with(VBMETA_MAGIC) {
         return Ok(Some(ImageKind::Vbmeta));
+    }
+    if super_head(head) {
+        return Ok(Some(ImageKind::Super { zstd: false }));
     }
     Ok(None)
 }
@@ -178,16 +236,26 @@ pub fn device(dir: &Path, name: &str, slot: Slot) -> PathBuf {
     dir.join(format!("{name}{}", slot.suffix()))
 }
 
-/// The partitions `kind` fits that this phone has in both slots, among the
-/// links in `dir`, the likeliest first.
+/// The partitions `kind` fits that this phone has, among the links in
+/// `dir`, the likeliest first: in both slots, but whole for a kind that
+/// goes to a partition without one.
 pub fn partitions(kind: ImageKind, dir: &Path) -> Result<Vec<&'static str>> {
     let mut found = Vec::new();
     for name in kind.partitions() {
-        let mut has = true;
-        for slot in [Slot::A, Slot::B] {
-            let path = device(dir, name, slot);
-            has &= path.try_exists().with_context(|| format!("look for {}", path.display()))?;
-        }
+        let has = match kind.slotted() {
+            true => {
+                let mut has = true;
+                for slot in [Slot::A, Slot::B] {
+                    let path = device(dir, name, slot);
+                    has &= path.try_exists().with_context(|| format!("look for {}", path.display()))?;
+                }
+                has
+            }
+            false => {
+                let path = dir.join(*name);
+                path.try_exists().with_context(|| format!("look for {}", path.display()))?
+            }
+        };
         if has {
             found.push(*name);
         }
@@ -260,6 +328,105 @@ pub fn flash<R: Read + Seek>(image: &mut R, len: u64, devices: &[PathBuf], progr
         ensure!(back.finalize() == written, "{} reads back different from what was written", path.display());
     }
     Ok(())
+}
+
+/// How much of a super image is read at a time while another thread writes
+/// what was read before: a super image is gigabytes, and writing the
+/// partition while it is still being decompressed takes the decompressing
+/// off the way of the writing.
+const SUPER_CHUNK: usize = 4 << 20;
+
+/// How many such pieces are in flight at once: one being read, and two
+/// waiting.
+const PIECES: usize = 3;
+
+/// Write a super image into the partition it is the whole of: what `image`
+/// holds, until it ends, reading it on one thread while another writes,
+/// then flushing what was written. `expected` is how long the image is when
+/// it is known, for the telling; the bytes past its end in the partition
+/// are left as they were, as fastboot leaves them. A super image is not
+/// read back: a partition this large would take as long to read as it took
+/// to write.
+pub fn flash_super<R: Read>(image: R, device: &Path, expected: Option<u64>, progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
+    let mut out =
+        OpenOptions::new().read(true).write(true).open(device).with_context(|| format!("open {}", device.display()))?;
+    let size = out.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", device.display()))?;
+    out.seek(SeekFrom::Start(0)).with_context(|| format!("rewind {}", device.display()))?;
+    if let Some(len) = expected {
+        ensure!(len <= size, "the image is {len} bytes, more than the {size} its partition holds");
+    }
+    let total = expected.unwrap_or(size);
+    write_while_reading(image, out, size, total, progress).with_context(|| format!("write {}", device.display()))
+}
+
+/// Copy `image` into `out`, reading and writing at once, and flushing `out`
+/// once it all went in; no more than `limit` bytes are taken from `image`.
+fn write_while_reading<R: Read>(
+    mut image: R,
+    mut out: File,
+    limit: u64,
+    total: u64,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<()> {
+    // As many places for what is free as there are pieces, so that they all
+    // go in before the writing thread starts taking them.
+    let (free_tx, free_rx) = mpsc::sync_channel::<Vec<u8>>(PIECES);
+    let (data_tx, data_rx) = mpsc::sync_channel::<(Vec<u8>, usize)>(PIECES);
+    thread::scope(|scope| -> Result<()> {
+        for _ in 0..PIECES {
+            free_tx.send(vec![0u8; SUPER_CHUNK]).expect("the channel is open");
+        }
+        let writer = scope.spawn(move || -> Result<()> {
+            while let Ok((buf, n)) = data_rx.recv() {
+                out.write_all(&buf[..n]).context("write the image")?;
+                let _ = free_tx.send(buf);
+            }
+            out.sync_all().context("flush the image")
+        });
+        let mut done = 0u64;
+        let mut failure = None;
+        loop {
+            let Ok(mut buf) = free_rx.recv() else { break };
+            let n = match fill(&mut image, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    failure = Some(anyhow::Error::from(e).context("read the image"));
+                    break;
+                }
+            };
+            done += n as u64;
+            if done > limit {
+                failure = Some(anyhow!("the image is larger than the {limit} bytes its partition holds"));
+                break;
+            }
+            if data_tx.send((buf, n)).is_err() {
+                break;
+            }
+            progress(done.min(total), total);
+            if done >= limit {
+                break;
+            }
+        }
+        drop(data_tx);
+        drop(free_rx);
+        let flushed = writer.join().expect("the writing thread does not panic");
+        match failure {
+            Some(e) => Err(e),
+            None => flushed,
+        }
+    })
+}
+
+/// `read` until it reads something or ends, and not the interruption by a
+/// signal that says nothing came of it.
+fn fill(image: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    loop {
+        match image.read(buf) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            other => return other,
+        }
+    }
 }
 
 pub(crate) use skyward_block::drop_cache;
@@ -338,7 +505,7 @@ mod tests {
     }
 
     fn kind_of(image: &[u8]) -> Result<Option<ImageKind>> {
-        detect(&mut Cursor::new(image), &image[..image.len().min(4096)])
+        detect(&mut Cursor::new(image), &image[..image.len().min(8192)])
     }
 
     #[test]
@@ -418,6 +585,56 @@ mod tests {
         assert_eq!(partitions(both, dir.path()).unwrap(), ["recovery", "boot"]);
         assert_eq!(partitions(ImageKind::Vbmeta, dir.path()).unwrap(), ["vbmeta"]);
         assert!(partitions(ImageKind::Dtbo, dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_super_image_is_told_by_the_geometry_of_its_metadata() {
+        let mut image = vec![0u8; 8192];
+        image[SUPER_GEOMETRY_AT..SUPER_GEOMETRY_AT + SUPER_MAGIC.len()].copy_from_slice(SUPER_MAGIC);
+        let kind = kind_of(&image).unwrap().unwrap();
+        assert_eq!(kind, ImageKind::Super { zstd: false });
+        assert!(!kind.slotted());
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::File::create(dir.path().join("super")).unwrap();
+        assert_eq!(partitions(kind, dir.path()).unwrap(), ["super"], "super has one partition, without a slot");
+        std::fs::File::create(dir.path().join("super_a")).unwrap();
+        assert_eq!(partitions(kind, dir.path()).unwrap(), ["super"], "a slot's super is not what an image goes to");
+    }
+
+    #[test]
+    fn a_zstd_frame_says_how_much_it_holds() {
+        assert_eq!(zstd_size(&[0x28, 0xb5, 0x2f, 0xfd, 0x60, 0xe8, 0x02]), Some(1000));
+        assert_eq!(zstd_size(&[0x28, 0xb5, 0x2f, 0xfd, 0x40]), None, "a frame that does not say");
+        assert_eq!(zstd_size(b"not zstd at all"), None);
+    }
+
+    #[test]
+    fn a_super_image_is_written_whole_leaving_what_was_past_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let device = dir.path().join("super");
+        std::fs::write(&device, vec![0xa5u8; SUPER_CHUNK * 2]).unwrap();
+        let image: Vec<u8> = (0..SUPER_CHUNK + 1234).map(|i| i as u8).collect();
+        let mut told = None;
+        flash_super(Cursor::new(&image), &device, Some(image.len() as u64), &mut |done, total| {
+            assert!(done <= total);
+            told = Some((done, total));
+        })
+        .unwrap();
+        let written = std::fs::read(&device).unwrap();
+        assert_eq!(&written[..image.len()], &image[..]);
+        assert!(written[image.len()..].iter().all(|&byte| byte == 0xa5), "what the partition held past the image stays");
+        assert_eq!(told, Some((image.len() as u64, image.len() as u64)));
+    }
+
+    #[test]
+    fn a_super_image_that_does_not_fit_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let device = dir.path().join("super");
+        std::fs::write(&device, vec![0u8; 4096]).unwrap();
+        assert!(flash_super(Cursor::new(vec![1u8; 4096]), &device, Some(8192), &mut |_, _| {}).is_err());
+        assert!(flash_super(Cursor::new(vec![1u8; 8192]), &device, None, &mut |_, _| {}).is_err());
+        assert_eq!(std::fs::read(&device).unwrap(), vec![0u8; 4096], "nothing was written");
     }
 
     /// A partition of `size` bytes filled with 0xAA, so untouched bytes

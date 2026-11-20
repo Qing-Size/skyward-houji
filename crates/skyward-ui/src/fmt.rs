@@ -926,6 +926,13 @@ pub fn image_kind(l: Lang, kind: ImageKind) -> (&'static str, &'static str) {
         }
         ImageKind::Dtbo => (["dtbo 镜像", "dtbo 映像檔", "dtbo image"], ["包含设备树叠加层", "包含裝置樹疊加層", "Holds device tree overlays"]),
         ImageKind::Vbmeta => (["vbmeta 镜像", "vbmeta 映像檔", "vbmeta image"], ["包含启动验证数据", "包含啟動驗證資料", "Holds verified boot data"]),
+        ImageKind::Super { zstd: true } => (
+            ["super 镜像", "super 映像檔", "super image"],
+            ["zstd 压缩的动态分区，解压后整份写入", "zstd 壓縮的動態分區，解壓後整份寫入", "Holds the dynamic partitions, zstd-compressed"],
+        ),
+        ImageKind::Super { zstd: false } => {
+            (["super 镜像", "super 映像檔", "super image"], ["包含动态分区，整份写入", "包含動態分區，整份寫入", "Holds the dynamic partitions"])
+        }
     };
     (l.pick(name), l.pick(holds))
 }
@@ -941,6 +948,7 @@ pub fn partition_role(l: Lang, name: &str) -> &'static str {
         "vbmeta" => ["启动验证数据", "啟動驗證資料", "Verified boot data"],
         "vbmeta_system" => ["系统分区的验证数据", "系統分割區的驗證資料", "Verification data of the system partitions"],
         "vbmeta_vendor" => ["厂商分区的验证数据", "廠商分割區的驗證資料", "Verification data of the vendor partitions"],
+        "super" => ["动态分区", "動態分區", "Dynamic partitions"],
         _ => ["分区", "分割區", "Partition"],
     })
 }

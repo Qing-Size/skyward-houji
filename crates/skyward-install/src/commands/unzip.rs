@@ -551,7 +551,7 @@ mod tests {
         let fill = |a: &&str| OsString::from(a.replace("{zip}", &zip.display().to_string()).replace("{dir}", &dir.display().to_string()));
         let args: Vec<OsString> = args.iter().map(fill).collect();
         let (mut output, mut errors) = (Vec::new(), Vec::new());
-        let code = run(&args, &mut Io { input: &mut Cursor::new(input), output: &mut output, errors: &mut errors });
+        let code = run(&args, &mut Io { input: &mut Cursor::new(input), output: &mut output, errors: &mut errors, fd: None });
         (code, output, String::from_utf8(errors).unwrap())
     }
 

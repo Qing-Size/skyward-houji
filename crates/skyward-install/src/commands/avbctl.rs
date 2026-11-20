@@ -238,7 +238,7 @@ mod tests {
     fn ran(args: &[&str], phone: &Phone) -> (i32, String, String) {
         let args: Vec<OsString> = args.iter().map(OsString::from).collect();
         let (mut output, mut errors) = (Vec::new(), Vec::new());
-        let code = avbctl(&args, &mut Io { input: &mut io::empty(), output: &mut output, errors: &mut errors }, phone);
+        let code = avbctl(&args, &mut Io { input: &mut io::empty(), output: &mut output, errors: &mut errors, fd: None }, phone);
         (code, String::from_utf8(output).unwrap(), String::from_utf8(errors).unwrap())
     }
 

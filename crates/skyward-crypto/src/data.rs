@@ -483,9 +483,21 @@ fn open_user_files(service: &KeyMint, user: u32, credential: Option<&[u8]>, owne
         // the secret is then guarded by nothing else.
         (Bound::Weaver(slot), _) => {
             let binder = Binder::open()?;
-            let weaver = Weaver::open(&binder)?;
-            let key = crate::user::weaver_key(&stretched, weaver.config()?.key_bytes)?;
-            let value = weaver.read(*slot, &key)?;
+            let value = match Weaver::open(&binder) {
+                Ok(weaver) => {
+                    let key = crate::user::weaver_key(&stretched, weaver.config()?.key_bytes)?;
+                    weaver.read(*slot, &key)?
+                }
+                // The weaver of NXP's is not started, as it ends in a
+                // segmentation fault after its first read and leaves the
+                // secure element's channel spoiled: the applet is asked
+                // itself instead.
+                Err(no_weaver) => {
+                    let key = crate::user::weaver_key(&stretched, crate::weaver::APPLET_KEY_BYTES)?;
+                    crate::weaver::read_through_element(&binder, *slot, &key)
+                        .with_context(|| format!("no weaver is running to ask ({no_weaver:#}), and its applet does not answer"))?
+                }
+            };
             (crate::user::weaver_protector_secret(&stretched, &value), None)
         }
         // The key holding this user's secret is guarded by the screen lock,

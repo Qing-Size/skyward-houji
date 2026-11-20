@@ -19,3 +19,6 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 libc = { workspace = true }
+# The secure element's own service, which the weaver's applet is asked
+# through where no weaver program is started.
+skyward-omapi = { path = "../skyward-omapi" }

@@ -32,6 +32,11 @@ const NO_SUCH_ELEMENT_ERROR: i32 = 2;
 /// The basic channel's number.
 const BASIC: u8 = 0;
 
+/// The weaver's applet, which a weaver asks for a logical channel by. The
+/// secure element's own service cannot carry commands down a logical
+/// channel on this phone's chip, so the basic channel is given instead.
+const WEAVER: [u8; 7] = [0xa0, 0x00, 0x00, 0x03, 0x96, 0x10, 0x10];
+
 /// How long a secure element's own service gets to say the chip is
 /// connected once it is asked to start.
 const CONNECTS_IN: Duration = Duration::from_secs(5);
@@ -201,19 +206,29 @@ impl Terminal {
     }
 
     /// Open a channel for `session` on the applet named `name`, or on the
-    /// one the secure element selects by itself: the basic channel, or a
-    /// logical one. None where the secure element has none to give.
+    /// one the secure element selects by itself. None where the secure
+    /// element has none to give.
+    ///
+    /// The secure element's own service, as the maker of this phone's chip
+    /// built it, opens a logical channel and selects an applet on it, and
+    /// then sends nothing down it: every command goes no further than the
+    /// service, which answers them all with the same communication error,
+    /// while the same command on the basic channel goes through. So a
+    /// logical channel for the weaver's applet, which asks for one and
+    /// keeps to a single channel, is answered with the basic channel, as a
+    /// program that asked for that one would be.
     fn open(self: &Arc<Self>, binder: &Binder, session: &Arc<Session>, name: Option<&[u8]>, answers: u8, logical: bool) -> Result<Option<Arc<Channel>>, Refusal> {
         self.start(binder).map_err(|e| io(format!("{e:#}")))?;
+        let basic = !logical || name == Some(&WEAVER[..]);
         let mut state = self.state();
-        if !logical && (state.channels.contains_key(&BASIC) || (name.is_none() && !state.own_applet_on_basic)) {
+        if basic && (state.channels.contains_key(&BASIC) || (name.is_none() && !state.own_applet_on_basic)) {
             return Ok(None);
         }
         let element = self.element(binder).map_err(|e| io(format!("{e:#}")))?;
         let asked = name.unwrap_or_default();
-        let opened = match logical {
-            true => element.open_logical(asked, answers),
-            false => element.open_basic(asked, answers).map(|answer| (BASIC, answer)),
+        let opened = match basic {
+            true => element.open_basic(asked, answers).map(|answer| (BASIC, answer)),
+            false => element.open_logical(asked, answers),
         };
         let (number, answer) = match opened {
             Ok(opened) => opened,
@@ -230,7 +245,7 @@ impl Terminal {
             answer: Mutex::new(answer),
             closed: AtomicBool::new(false),
         });
-        if !logical && name.is_some() {
+        if basic && name.is_some() {
             state.own_applet_on_basic = false;
         }
         state.channels.insert(number, channel.clone());

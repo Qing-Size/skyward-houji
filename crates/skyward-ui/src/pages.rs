@@ -18,7 +18,7 @@ use crate::term::{self, Term};
 use crate::theme::Theme;
 use crate::tr;
 use crate::icons::{self, Icon};
-use crate::widgets::{self, Caption, Detail, Fact, Outline, Row, Spec, SystemCard, SystemMark, Tone, Trail};
+use crate::widgets::{self, Caption, Detail, Fact, Outline, Reading, Row, Spec, SystemCard, SystemMark, Tone, Trail};
 use skyward_info::{DeviceInfo, VERSION};
 use skyward_install::{Outcome, Reflash, Refusal, Stage};
 use skyward_net::download::Progress;
@@ -258,7 +258,22 @@ pub fn home(cx: &Ctx) -> Frame {
         rows.push(Row::new(l.pick(SECOND_FAILED)).icon(RED, Icon::Systems).subtitle(why).trail(Trail::Arrow));
         opens.push(Some(Action::Open(Screen::Systems)));
     }
-    let card = widgets::device_card(&mut c, t, f, y, &i.model, &sub, &rows);
+    // Under the phone's name, the readings the stock home keeps in reach:
+    // the slot the system runs from, the data partition's lock, the room
+    // left on it and the battery. A reading the phone does not have is left
+    // out, and the row closes up without it.
+    let mut readings = Vec::new();
+    if let Some(slot) = i.slot {
+        readings.push(Reading { value: slot.letter().into(), caption: l.pick(CURRENT_SLOT) });
+    }
+    readings.push(Reading { value: fmt::data(l, &cx.state.data).into(), caption: l.pick(DATA_STATE) });
+    if let Some(free) = i.storage.free {
+        readings.push(Reading { value: fmt::gb(free), caption: l.pick(FREE_SPACE) });
+    }
+    if let Some(b) = i.battery.as_ref() {
+        readings.push(Reading { value: format!("{}%", b.level), caption: fmt::charge(l, b.charge) });
+    }
+    let card = widgets::device_card(&mut c, t, f, y, &i.model, &sub, &readings, &rows);
     out.push(Hit { rect: card.rows[0], action: Action::Open(Screen::About) });
     out.extend(card.rows[1..].iter().zip(&opens).filter_map(|(&rect, open)| open.map(|action| Hit { rect, action })));
     y = card.bottom + t.m.card_gap;
@@ -290,6 +305,8 @@ pub fn home(cx: &Ctx) -> Frame {
         Row::new(l.pick(["备份", "備份", "Backup"])).icon(BLUE, Icon::Backup),
         Row::new(l.pick(["恢复", "還原", "Restore"])).icon(PURPLE, Icon::Restore),
         Row::new(l.pick(["挂载", "掛載", "Mount"])).icon(SLATE, Icon::Mount),
+        Row::new(l.pick(FILES)).icon(BLUE, Icon::Folder),
+        Row::new(l.pick(["下载", "下載", "Download"])).icon(BLUE, Icon::Globe),
         Row::new(l.pick(DECRYPT)).icon(BLUE, Icon::Lock).trail(Trail::Value(fmt::data(l, &cx.state.data))),
     ]);
     out.extend(hits(&tools.rows, &[
@@ -297,6 +314,8 @@ pub fn home(cx: &Ctx) -> Frame {
         Action::Open(Screen::Backup),
         Action::Open(Screen::Restore),
         Action::Open(Screen::Mount),
+        Action::Open(Screen::Files),
+        Action::Open(Screen::Update),
         Action::Open(Screen::Decrypt),
     ]));
     y = tools.bottom + t.m.card_gap;
@@ -546,6 +565,8 @@ const RESOLUTION: Text = ["分辨率", "解析度", "Resolution"];
 const OS_VERSION: Text = ["OS 版本", "OS 版本", "OS version"];
 const ANDROID_VERSION: Text = ["Android 版本", "Android 版本", "Android version"];
 const CURRENT_SLOT: Text = ["当前槽位", "目前槽位", "Current slot"];
+const DATA_STATE: Text = ["数据分区", "資料分區", "Data partition"];
+const FREE_SPACE: Text = ["可用空间", "可用空間", "Free space"];
 const DATA_PART: Text = ["data 分区", "data 分割區", "data partition"];
 
 /// The phone's processor by its marketing name in `l`, from the phone's

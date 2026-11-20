@@ -116,6 +116,10 @@ pub struct Metrics {
     pub label_px: f32,
     pub account_title_px: f32,
     pub account_row_h: f32,
+    /// The row of readings under a card's name: how tall it is, and how
+    /// large the values are in it.
+    pub reading_h: f32,
+    pub reading_px: f32,
     pub avatar: f32,
     pub avatar_inset: f32,
     pub badge_px: f32,
@@ -210,6 +214,8 @@ fn metrics(w: u32, h: u32, px_per_dp: f32) -> Metrics {
         label_px: dp(13.2),
         account_title_px: dp(17.1),
         account_row_h: dp(69.7),
+        reading_h: dp(52.0),
+        reading_px: dp(17.1),
         avatar: dp(34.0),
         avatar_inset: dp(12.8),
         badge_px: dp(14.5),

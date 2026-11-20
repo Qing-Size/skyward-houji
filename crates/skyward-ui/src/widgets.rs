@@ -1659,12 +1659,29 @@ pub fn list_toned(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Row], 
     Block { bottom: top + h, rows: rects }
 }
 
-/// Account-style card: avatar, name and detail, then optional rows. The
-/// first rect returned covers the name row.
-pub fn device_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, sub: &str, rows: &[Row]) -> Block {
+/// A reading under a card's name: what it says, and what it is.
+#[derive(Clone, Debug)]
+pub struct Reading {
+    pub value: String,
+    pub caption: &'static str,
+}
+
+/// Account-style card: avatar, name and detail, the readings under the
+/// name, then optional rows. The first rect returned covers the name row.
+pub fn device_card(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &Fonts,
+    top: f32,
+    title: &str,
+    sub: &str,
+    readings: &[Reading],
+    rows: &[Row],
+) -> Block {
     let m = &t.m;
     let lays: Vec<Layout> = rows.iter().map(|r| layout(c, t, f, r)).collect();
-    let h = m.account_row_h + lays.iter().map(|l| l.h).sum::<f32>();
+    let readings_h = if readings.is_empty() { 0.0 } else { m.reading_h };
+    let h = m.account_row_h + readings_h + lays.iter().map(|l| l.h).sum::<f32>();
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
     c.fill_round_rect(card_x, top, right - card_x, h, m.card_radius, t.pal.card);
 
@@ -1686,6 +1703,24 @@ pub fn device_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, 
     let tone = Tone::page(t);
     let mut rects = vec![Rect::new(card_x, top, right - card_x, m.account_row_h)];
     let mut y = top + m.account_row_h;
+    // The readings share the width evenly, each a value with its caption
+    // under it, in the order they were given.
+    if !readings.is_empty() {
+        let span = (right - card_x) - m.inner * 2.0;
+        let col = span / readings.len() as f32;
+        let (vt, vb) = f.heading.ink(m.reading_px);
+        let (ct, cb) = f.body.ink(m.label_px);
+        let gap = m.sub_gap * 0.6;
+        let block = (vb - vt) + gap + (cb - ct);
+        let ink = y + (m.reading_h - block) / 2.0;
+        let room = col - m.dp(10.0);
+        for (k, r) in readings.iter().enumerate() {
+            let x = card_x + m.inner + col * k as f32;
+            c.text_top(&f.heading, &r.value, x, ink, m.reading_px, t.pal.text, Some(room));
+            c.text_top(&f.body, r.caption, x, ink + (vb - vt) + gap, m.label_px, t.pal.subtitle, Some(room));
+        }
+        y += m.reading_h;
+    }
     for (r, l) in rows.iter().zip(&lays) {
         draw_row(c, t, f, r, l, y, &tone);
         rects.push(Rect::new(card_x, y, right - card_x, l.h));

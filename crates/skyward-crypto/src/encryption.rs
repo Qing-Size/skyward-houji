@@ -26,9 +26,16 @@ pub struct Encryption {
 }
 
 impl Encryption {
-    /// Read what an entry of the phone's own table says.
+    /// Read what an entry of the phone's own table says. Where it says
+    /// nothing about the partition being encrypted whole, the words every
+    /// build of this Android writes are taken instead: a build that turns
+    /// the encryption off leaves them out, and so does the table of the
+    /// other slot, which a recovery started from one slot reads while the
+    /// partition stays encrypted as the system of the other slot left it.
     pub fn of(entry: &Entry) -> Result<Encryption> {
-        let said = entry.extra("metadata_encryption").context("the phone says its data partition is not encrypted whole")?;
+        let Some(said) = entry.extra("metadata_encryption") else {
+            return Ok(Encryption { cipher: CIPHERS[0].1.to_string(), wrapped: true });
+        };
         let (name, rest) = said.split_once(':').unwrap_or((said, ""));
         let cipher = CIPHERS
             .iter()
@@ -38,9 +45,12 @@ impl Encryption {
     }
 }
 
+/// Where vold keeps the key when the phone's table names no directory.
+const DEFAULT_KEY_DIR: &str = "/metadata/vold/metadata_encryption";
+
 /// Where the phone keeps the key for the filesystem an entry describes.
 pub fn key_dir(entry: &Entry) -> Result<PathBuf> {
-    let dir = entry.extra("keydirectory").context("the phone says where the key for its data partition is not")?;
+    let dir = entry.extra("keydirectory").unwrap_or(DEFAULT_KEY_DIR);
     Ok(Path::new(dir).join(KEY_DIR))
 }
 
@@ -79,10 +89,17 @@ mod tests {
     }
 
     #[test]
-    fn a_cipher_or_a_key_the_phone_does_not_name_is_an_error() {
-        assert!(Encryption::of(&entry("quota")).is_err());
+    fn a_table_that_names_no_encryption_takes_the_words_every_build_writes() {
+        assert_eq!(
+            Encryption::of(&entry("quota")).unwrap(),
+            Encryption { cipher: "aes-xts-plain64".into(), wrapped: true }
+        );
+        assert_eq!(key_dir(&entry("quota")).unwrap(), Path::new("/metadata/vold/metadata_encryption/key"));
+    }
+
+    #[test]
+    fn a_cipher_the_phone_names_but_this_recovery_does_not_know_is_an_error() {
         assert!(Encryption::of(&entry("metadata_encryption=rot13")).is_err());
-        assert!(key_dir(&entry("quota")).is_err());
     }
 
     #[test]

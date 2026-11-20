@@ -950,6 +950,26 @@ fn shell_at_sbin() -> Result<()> {
     Ok(())
 }
 
+/// The device a mount point is of, read from the mounts list.
+fn backing_device(point: &str) -> Option<PathBuf> {
+    let mounts = fs::read_to_string("/proc/self/mounts").ok()?;
+    mounts.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let source = fields.next()?;
+        (fields.next()? == point).then(|| PathBuf::from(source))
+    })
+}
+
+/// Mark the block device behind a mount writable again, where mounting it
+/// read only left it so.
+fn set_writable(device: &Path) {
+    let Ok(file) = File::open(device) else { return };
+    let off: libc::c_int = 0;
+    // SAFETY: the file is a block device open for reading, and BLKROSET
+    // takes a pointer to the int that says whether it is read only.
+    unsafe { libc::ioctl(file.as_raw_fd(), libc::BLKROSET, &off) };
+}
+
 /// A line one of the install script's outputs gave.
 enum Said {
     Request(Request),
@@ -975,6 +995,22 @@ impl Drop for Group {
 /// leaves running is ended with it.
 fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
     let mut log = File::create(SCRIPT_LOG).with_context(|| format!("create {SCRIPT_LOG}"))?;
+    // A script may write the modem partition, and it is the one the recovery
+    // mounts to read firmware from: a mounted block device cannot be written,
+    // the write refused with "Operation not permitted", and mounting it read
+    // only leaves it marked so past the unmount. Let the mounts go, and mark
+    // the partitions writable again, before the script starts.
+    for point in ["/firmware", "/vendor/firmware", "/vendor/firmware_mnt"] {
+        let device = backing_device(point);
+        if let Ok(p) = std::ffi::CString::new(point) {
+            // SAFETY: a NUL-terminated mount point; detaching it lets
+            // whatever holds a file there keep it until it lets go.
+            unsafe { libc::umount2(p.as_ptr(), libc::MNT_DETACH) };
+        }
+        if let Some(device) = device {
+            set_writable(&device);
+        }
+    }
     let (requests_read, requests_write) = pipe()?;
     let (output_read, output_write) = pipe()?;
     let fd = requests_write.as_raw_fd();

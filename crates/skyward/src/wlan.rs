@@ -681,30 +681,41 @@ fn unload(name: &str) {
     unsafe { libc::syscall(libc::SYS_delete_module, c.as_ptr(), 0 as libc::c_uint) };
 }
 
-/// Put a file the driver asks for where the firmware loader looks.
+/// Put a file the driver asks for where the firmware loader looks. One the
+/// phone may be without is passed over where the phone has none, and the
+/// loader then tells the driver so, as it does in the phone's own system.
 fn place(file: &Firmware) -> Result<()> {
+    let held = |path: &Path| match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if file.optional && e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    };
     let bytes = match &file.partition {
-        None => fs::read(&file.path).with_context(|| format!("read {}", file.path))?,
+        None => held(Path::new(&file.path)).with_context(|| format!("read {}", file.path))?,
         Some(partition) => {
             let at = Path::new(PARTITIONS).join(partition);
             fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
             skyward_block::mount::mount_ro(&Path::new(skyward_block::BY_NAME).join(partition), &at)?;
-            let read = fs::read(at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path));
+            let read = held(&at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path));
             skyward_block::mount::umount(&at)?;
             read?
         }
     };
-    // The recovery's own ueventd looks in /etc/firmware, which is writable.
-    write_firmware(Path::new(FIRMWARE), &file.name, &bytes)?;
-    // The phone's ueventd looks in the vendor firmware folder too, which is
-    // a read-only mount of the modem partition: tell it otherwise, and put
-    // the file there as well, so either loader finds it.
-    let vendor = Path::new("/vendor/firmware");
-    if vendor.is_dir() {
-        remount_rw(vendor);
-        let _ = write_firmware(vendor, &file.name, &bytes);
+    match bytes {
+        Some(bytes) => {
+            // The recovery's own ueventd looks in /etc/firmware, which is
+            // writable. The phone's looks in the vendor firmware folder too:
+            // put the file in both places so either loader finds it.
+            write_firmware(Path::new(FIRMWARE), &file.name, &bytes)?;
+            let vendor = Path::new("/vendor/firmware");
+            if vendor.is_dir() {
+                remount_rw(vendor);
+                let _ = write_firmware(vendor, &file.name, &bytes);
+            }
+            Ok(())
+        }
+        None => skyward_sys::kmsg(&format!("the phone has no {}, and the driver starts without it", file.path)),
     }
-    Ok(())
 }
 
 /// Let the recovery write to a read-only mount, if it can.
@@ -728,6 +739,7 @@ fn write_firmware(base: &Path, name: &str, bytes: &[u8]) -> Result<()> {
     let dir = to.parent().expect("a firmware file is in a folder");
     fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))
+}
 }
 
 /// Start the supplicant on the interface, and wait for its control socket.

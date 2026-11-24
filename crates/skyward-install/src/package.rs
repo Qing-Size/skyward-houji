@@ -4,7 +4,7 @@
 //! an update package may go on this phone, checked the way Android's
 //! recovery checks it.
 
-use crate::image::{self, ImageKind};
+use crate::image::{self, Image};
 use crate::Refusal;
 use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
@@ -22,13 +22,18 @@ pub const UPDATE_BINARY: &str = "META-INF/com/google/android/update-binary";
 /// next one.
 const HEAD: usize = 8192;
 
+/// What a zip starts with.
+const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
+
 /// A zstd frame starts with this.
 const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Package {
     Update(Update),
-    Image(ImageKind),
+    /// A file that is no zip: an image, of a kind what it holds tells, or
+    /// of none this recovery knows.
+    Image(Image),
     /// A zip that installs itself by running the script inside it.
     Script,
     /// A system to install beside the installed one.
@@ -87,10 +92,13 @@ pub fn identify<R: Read + Seek>(mut file: R) -> Result<Package> {
     let mut head = Vec::with_capacity(HEAD);
     (&mut file).take(HEAD as u64).read_to_end(&mut head).context("read the package's first bytes")?;
     if head.starts_with(ZSTD_MAGIC) {
-        return compressed(file, &head);
+        let len = file.seek(SeekFrom::End(0)).context("find the package's size")?;
+        file.seek(SeekFrom::Start(head.len() as u64)).context("seek past the compressed image's first bytes")?;
+        return compressed(file, &head, len);
     }
-    if !head.starts_with(b"PK\x03\x04") {
-        return Ok(image::detect(&mut file, &head)?.map_or(Package::Unknown, Package::Image));
+    if !head.starts_with(ZIP_MAGIC) {
+        let len = file.seek(SeekFrom::End(0)).context("find the package's size")?;
+        return image::open(&mut file, len).map(Package::Image);
     }
     file.seek(SeekFrom::Start(0)).context("rewind the package")?;
     let mut zip = ZipArchive::new(file).context("read the zip directory")?;
@@ -108,12 +116,12 @@ pub fn identify<R: Read + Seek>(mut file: R) -> Result<Package> {
 
 /// What an image compressed with zstd holds, by the first bytes of what it
 /// decompresses into: a super image is the one written from such a file.
-fn compressed<R: Read>(rest: R, head: &[u8]) -> Result<Package> {
+fn compressed<R: Read>(rest: R, head: &[u8], len: u64) -> Result<Package> {
     let mut decoder = zstd::stream::read::Decoder::new(head.chain(rest)).context("read the compressed image")?;
     let mut inner = Vec::with_capacity(HEAD);
     (&mut decoder).take(HEAD as u64).read_to_end(&mut inner).context("decompress the image's first bytes")?;
     Ok(match image::super_head(&inner) {
-        true => Package::Image(ImageKind::Super { zstd: true }),
+        true => Package::Image(Image { kind: ImageKind::Super { zstd: true }, layout: image::Layout::whole(len) }),
         false => Package::Unknown,
     })
 }
@@ -341,7 +349,9 @@ METADATA_SIZE=1024
         assert!(identify(Cursor::new(squeezed)).is_err());
         let other = zip_with(&[("readme.txt", b"hello", CompressionMethod::Stored)]);
         assert_eq!(identify(Cursor::new(other)).unwrap(), Package::Unknown);
-        assert_eq!(identify(Cursor::new(b"just some text".to_vec())).unwrap(), Package::Unknown);
+        let text = Image { kind: image::ImageKind::Other, layout: image::Layout::whole(14) };
+        assert_eq!(identify(Cursor::new(b"just some text".to_vec())).unwrap(), Package::Image(text), "no zip, and nothing an image is known by");
+        assert_eq!(identify(Cursor::new(Vec::new())).unwrap(), Package::Image(Image { kind: image::ImageKind::Other, layout: image::Layout::whole(0) }));
     }
 
     #[test]
@@ -349,7 +359,9 @@ METADATA_SIZE=1024
         let mut super_image = vec![0u8; 8192];
         super_image[4096..4100].copy_from_slice(&[0x67, 0x44, 0x6c, 0x61]);
         let squeezed = zstd::stream::encode_all(&super_image[..], 1).unwrap();
-        assert_eq!(identify(Cursor::new(squeezed)).unwrap(), Package::Image(ImageKind::Super { zstd: true }));
+        let len = squeezed.len() as u64;
+        let image = Image { kind: ImageKind::Super { zstd: true }, layout: image::Layout::whole(len) };
+        assert_eq!(identify(Cursor::new(squeezed)).unwrap(), Package::Image(image));
         let other = zstd::stream::encode_all(&b"just some text"[..], 1).unwrap();
         assert_eq!(identify(Cursor::new(other)).unwrap(), Package::Unknown);
     }

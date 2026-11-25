@@ -4,7 +4,7 @@
 //! an update package may go on this phone, checked the way Android's
 //! recovery checks it.
 
-use crate::image::{self, Image};
+use crate::image::{self, Image, ImageKind};
 use crate::Refusal;
 use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;

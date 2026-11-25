@@ -859,18 +859,16 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
                     let expected = image::zstd_size(&head[..read]);
                     detach_once(ctx)?;
                     let decoder = zstd::stream::read::Decoder::with_buffer(file).context("decompress the image")?;
-                    let mut told: Option<Instant> = None;
-                    image::flash_super(decoder, &device, expected, &mut |done, total| {
-                        if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
-                            ctx.send(Event::Progress(Stage::Flashing { done, total }));
-                            told = Some(Instant::now());
-                        }
-                    })?;
+                    flash_super(ctx, decoder, &device, expected)?;
                 }
                 ImageKind::Super { zstd: false } => {
                     image::check_super(&mut image::Expanded::new(&mut file, layout), skyward_block::size_bytes(&device)?)?;
                     detach_once(ctx)?;
-                    write_image(ctx, &mut file, layout, &[device], false)?;
+                    if layout.sparse {
+                        write_image(ctx, &mut file, layout, &[device], false)?;
+                    } else {
+                        flash_super(ctx, &mut file, &device, Some(layout.size))?;
+                    }
                 }
                 _ => unreachable!("only a super image is written to the whole super partition"),
             }
@@ -888,6 +886,18 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
         }
     }
     Ok(Done::Decided(Outcome::Flashed { partition, slots }))
+}
+
+/// Write a super image without reading the large partition back, telling
+/// the screen how far it is.
+fn flash_super<R: Read>(ctx: &Context, file: R, device: &Path, expected: Option<u64>) -> Result<()> {
+    let mut told: Option<Instant> = None;
+    image::flash_super(file, device, expected, &mut |done, total| {
+        if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
+            ctx.send(Event::Progress(Stage::Flashing { done, total }));
+            told = Some(Instant::now());
+        }
+    })
 }
 
 /// Write the image `file` holds to `devices` as `layout` lays it out and

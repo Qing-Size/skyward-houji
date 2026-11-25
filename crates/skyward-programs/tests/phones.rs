@@ -119,10 +119,12 @@ fn builds(codename: &str, partition: &str) -> Vec<String> {
 /// recovery asks, whichever build of the hardware the phone is: the odm
 /// partition's description is the one named after the phone where it has
 /// one, and the vendor partition's any of those it carries. A phone with a
-/// weaver starts what the weaver goes through before it, and one whose
-/// weaver is NXP's, whose secure element is in its NFC controller, loads
-/// the controller's driver right before the secure element's own service,
-/// which opens the node the driver makes; no other phone loads a driver.
+/// weaver starts what the weaver goes through before it; one whose weaver
+/// is NXP's has its secure element in its NFC controller and loads the
+/// controller's driver right before the secure element's own service, which
+/// opens the node the driver makes, but the weaver itself stays unstarted,
+/// as the recovery asks the applet directly instead; no other phone loads a
+/// driver.
 /// No service is told of as registered by two programs, all the phone
 /// describes reads back from the description written of it for the service
 /// directory, what the programs register among it, and every account a
@@ -165,14 +167,15 @@ fn every_phone_names_one_program_for_each_service() {
             assert!(weaver > 0 && (steps[weaver - 1].contains("secure_element") || steps[weaver - 1] == "(the secure element service)"), "{codename}: {steps:?}");
         }
         let drivers: Vec<(usize, &Driver)> = first.iter().enumerate().filter_map(|(at, step)| if let Step::Drive(driver) = step { Some((at, driver)) } else { None }).collect();
-        match steps.iter().any(|name| name.ends_with("weaver-service.nxp-qti")) {
-            true => {
-                let [(at, driver)] = drivers[..] else { panic!("{codename} loads one driver: {steps:?}") };
+        match drivers[..] {
+            [(at, driver)] => {
                 assert_eq!(*driver, Driver { module: "nxp-nci", node: "/dev/nq-nci" }, "{codename}");
-                assert!(steps[at + 1].contains("secure_element"), "{codename}: {steps:?}");
+                assert!(steps[at + 1].contains("secure_element") || steps[at + 1] == "(the secure element service)", "{codename}: {steps:?}");
+                assert!(!steps.iter().any(|name| name.ends_with("weaver-service.nxp-qti")), "{codename} leaves NXP's weaver unstarted: {steps:?}");
                 with_nxp_s_weaver.push(codename);
             }
-            false => assert!(drivers.is_empty(), "{codename}: {steps:?}"),
+            [] => assert!(!steps.iter().any(|name| name.ends_with("weaver-service.nxp-qti")), "{codename} leaves NXP's weaver unstarted: {steps:?}"),
+            _ => panic!("{codename} loads one driver: {steps:?}"),
         }
         let lists: Vec<String> = ["vendor/etc/passwd", "odm/etc/passwd", "vendor/etc/group", "odm/etc/group"].iter().map(|list| described(codename).join(list).to_string_lossy().into_owned()).collect();
         let known = skyward_sys::ueventd::accounts(&lists.iter().map(String::as_str).collect::<Vec<_>>());

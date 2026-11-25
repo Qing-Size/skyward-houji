@@ -11,7 +11,7 @@ use crate::files;
 use crate::fmt::{self, Verb};
 use crate::font::Fonts;
 use crate::geom::Rect;
-use crate::lang::{same, Lang, Text};
+use crate::lang::{same, three, Lang, Text};
 use crate::search;
 use crate::term::{self, Term};
 use crate::texts;
@@ -285,7 +285,7 @@ pub fn home(cx: &Ctx) -> Frame {
         Row::new(l.pick(texts::page::RESTORE)).icon(PURPLE, Icon::Restore),
         Row::new(l.pick(texts::page::MOUNT)).icon(SLATE, Icon::Mount),
         Row::new(l.pick(texts::page::FILES)).icon(BLUE, Icon::Folder),
-        Row::new(l.pick(["下载", "下載", "Download"])).icon(BLUE, Icon::Globe),
+        Row::new(l.among("下载", "下載", "Download")).icon(BLUE, Icon::Globe),
         Row::new(l.pick(texts::page::DECRYPT)).icon(BLUE, Icon::Lock).trail(Trail::Value(fmt::data(l, &cx.state.data))),
     ]);
     out.extend(hits(&tools.rows, &[
@@ -508,10 +508,9 @@ pub fn about(cx: &Ctx) -> Frame {
     Frame { header: false, hero: Some(art), ..Frame::new(t, canvas, out, cx.state.lang.pick(texts::page::ABOUT), summary_top) }
 }
 
-const CURRENT_SLOT: Text = ["当前槽位", "目前槽位", "Current slot"];
-const DATA_STATE: Text = ["数据分区", "資料分區", "Data partition"];
-const FREE_SPACE: Text = ["可用空间", "可用空間", "Free space"];
-
+const CURRENT_SLOT: Text = three("当前槽位", "目前槽位", "Current slot");
+const DATA_STATE: Text = three("数据分区", "資料分區", "Data partition");
+const FREE_SPACE: Text = three("可用空间", "可用空間", "Free space");
 
 /// The phone's processor by its marketing name in `l`, from the phone's
 /// settings, or else by its cores.

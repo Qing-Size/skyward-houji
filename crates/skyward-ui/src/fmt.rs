@@ -2,7 +2,7 @@ use crate::app::{
     BackupRefusal, Data, EraseStop, FileKind, FileRow, ItemEnd, MountFailure, Part, PartKind, PartStop, Place, Source, TermEnd, BACKUP_PARTS,
     TIME_ZONES,
 };
-use crate::lang::{Lang, Text};
+use crate::lang::{three, Lang, Text};
 use crate::texts;
 use jiff::civil::DateTime;
 pub use jiff::tz::TimeZone;
@@ -777,7 +777,11 @@ pub fn image_kind(l: Lang, kind: ImageKind) -> (&'static str, String) {
         ImageKind::Vbmeta => (image::VBMETA, holds::VERIFIED_BOOT_DATA),
         ImageKind::Super { zstd: true } => (
             image::WHOLE_SUPER,
-            ["zstd 压缩的动态分区，解压后整份写入", "zstd 壓縮的動態分區，解壓後整份寫入", "Holds the dynamic partitions, zstd-compressed"],
+            three(
+                "zstd 压缩的动态分区，解压后整份写入",
+                "zstd 壓縮的動態分區，解壓後整份寫入",
+                "Holds the dynamic partitions, zstd-compressed",
+            ),
         ),
         ImageKind::Super { zstd: false } => (image::WHOLE_SUPER, holds::LOGICAL_PARTITIONS),
         ImageKind::Filesystem(filesystem) => return (l.pick(image::PARTITION), holds::filesystem(l, filesystem.name())),

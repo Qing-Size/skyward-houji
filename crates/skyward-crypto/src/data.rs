@@ -171,7 +171,6 @@ pub fn reach_unmounted(keys: Option<&KeyMint>) -> Result<Reached> {
     anyhow::ensure!(!mount::is_mount_point(Path::new(MOUNT))? && dm::status(MAPPED)?.is_none(), "the data partition is open");
     reach(keys, &table()?)
 }
-}
 
 /// Show the owner's shared storage at /sdcard; shown already, it stays.
 fn show_owner_storage() -> Result<()> {

@@ -15,6 +15,16 @@ pub const fn same(name: &'static str) -> Text {
     [name; Lang::COUNT]
 }
 
+/// A text written in the two kinds of Chinese characters and in English
+/// alone, which every other language reads in English, as [`Lang::among`]
+/// picks one.
+pub const fn three(hans: &'static str, hant: &'static str, en: &'static str) -> Text {
+    let mut each = [en; Lang::COUNT];
+    each[Lang::Hans as usize] = hans;
+    each[Lang::Hant as usize] = hant;
+    each
+}
+
 thread_local! {
     /// How each language's numbers choose among the forms a text takes.
     static PLURALS: Vec<PluralRules> = Lang::ALL

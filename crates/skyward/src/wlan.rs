@@ -728,7 +728,7 @@ fn remount_rw(target: &Path) {
             std::ptr::null(),
             t.as_ptr(),
             std::ptr::null(),
-            libc::MS_REMOUNT as libc::c_ulong,
+            libc::MS_REMOUNT,
             std::ptr::null_mut(),
         );
     }
@@ -739,7 +739,6 @@ fn write_firmware(base: &Path, name: &str, bytes: &[u8]) -> Result<()> {
     let dir = to.parent().expect("a firmware file is in a folder");
     fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))
-}
 }
 
 /// Start the supplicant on the interface, and wait for its control socket.
@@ -825,7 +824,7 @@ fn bind_mount(source: &Path, target: &Path) -> Result<()> {
             s.as_ptr(),
             t.as_ptr(),
             std::ptr::null(),
-            libc::MS_BIND as libc::c_ulong,
+            libc::MS_BIND,
             std::ptr::null_mut(),
         )
     };

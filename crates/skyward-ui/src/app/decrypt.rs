@@ -69,6 +69,23 @@ impl App {
         self.refresh();
     }
 
+    /// The user's own files opened too: the page this one was opened from
+    /// shows again, the home page where it was opened from nothing. A page
+    /// that is not asking for a screen lock stays as it is.
+    pub fn decrypted(&mut self) {
+        if self.screen() != Screen::Decrypt || self.state.data != Data::Open {
+            return;
+        }
+        self.leave(true);
+        if self.stack.len() > 1 {
+            self.stack.pop();
+        } else {
+            *self.top_mut() = (Screen::Home, 0.0, Focus::Unset);
+        }
+        self.settle_page();
+        self.refresh();
+    }
+
     /// The data partition did not open, and why.
     pub fn data_failed(&mut self, why: String) {
         self.state.data = Data::Failed(why);
@@ -248,6 +265,17 @@ mod tests {
         let fx = app.touch(Touch::Up, &f, 0);
         assert!(fx.is_empty());
         assert_eq!(app.deadline(0), Some(TOAST_MS), "the page says how many dots it takes");
+    }
+
+    #[test]
+    fn every_users_files_open_gives_way_to_home() {
+        let mut app = App::new(Screen::Decrypt, W, H, PPD);
+        app.data_waiting(Some((0, Keys::Digits)));
+        app.decrypted();
+        assert_eq!(app.screen(), Screen::Decrypt, "the owner's files still wait");
+        app.data_waiting(None);
+        app.decrypted();
+        assert_eq!((app.screen(), app.stack.len()), (Screen::Home, 1), "the page it opened from nothing gives way to home");
     }
 
     #[test]

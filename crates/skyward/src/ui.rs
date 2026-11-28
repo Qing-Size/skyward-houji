@@ -2382,6 +2382,11 @@ impl Pages<'_> {
             decrypt::Ended::Unlocked(Ok(still)) => {
                 self.closed = still;
                 show_closed(&mut self.app, &self.closed)?;
+                // Every user's own files opened with the one answered for:
+                // the page the recovery opened on gives way to home.
+                if self.closed.is_empty() {
+                    self.app.decrypted();
+                }
             }
             decrypt::Ended::Unlocked(Err(why)) => {
                 skyward_sys::kmsg(&format!("what was entered did not open the user's files: {why}"))?;

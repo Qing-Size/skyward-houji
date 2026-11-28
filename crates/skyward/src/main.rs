@@ -828,7 +828,9 @@ fn recovery() -> Result<()> {
                 programs.extend(prepare(&cfg, booted_slot()?)?);
             }
             let root = Path::new("/");
-            ui::run(&cfg, &programs, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Home, None)
+            // The recovery opens on the decrypt page, so the owner's files
+            // are asked for as soon as it is up; not now goes on to home.
+            ui::run(&cfg, &programs, &root.join(ramdisk::FONT), &root.join(ramdisk::MONO), request, Screen::Decrypt, None)
         }
         #[cfg(not(target_os = "android"))]
         {

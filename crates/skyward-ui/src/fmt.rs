@@ -2,7 +2,7 @@ use crate::app::{
     BackupRefusal, Data, EraseStop, FileKind, FileRow, ItemEnd, MountFailure, Part, PartKind, PartStop, Place, Source, TermEnd, BACKUP_PARTS,
     TIME_ZONES,
 };
-use crate::lang::{three, Lang, Text};
+use crate::lang::{Lang, Text};
 use crate::texts;
 use jiff::civil::DateTime;
 pub use jiff::tz::TimeZone;

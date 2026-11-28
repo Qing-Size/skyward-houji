@@ -584,7 +584,7 @@ fn main() -> Result<()> {
             let older = BackupRefusal::OlderAndroid { was: "17".into(), now: "16".into() };
             app.state.backup_job = job(true, Vec::new(), None, Some(BackupEnd::Refused(older)))
         }),
-        ("49-advanced-light", Screen::Advanced, false, &|_| {}),
+        ("49-advanced-light", Screen::Home, false, &|_| {}),
         ("02b-home-light-charging", Screen::Home, false, &|app| {
             app.state.charge = skyward_ui::app::ChargeNow {
                 now: Some(412),
@@ -956,7 +956,7 @@ fn main() -> Result<()> {
             app.set_boot_slots(Ok(BootSlots { active: Slot::B, bootable: [false, true], successful: [false, true] }));
         }),
         ("116-update-dark-failed", Screen::Update, true, &|app| app.set_update(Standing::Failed(FailureCode::ExpectedMergeTarget))),
-        ("117-advanced-light-merged", Screen::Advanced, false, &|app| app.set_update(Standing::Merged)),
+        ("117-advanced-light-merged", Screen::Home, false, &|app| app.set_update(Standing::Merged)),
         ("58-license-light", Screen::License, false, &|_| {}),
         ("59-font-license-light", Screen::FontLicense, false, &|_| {}),
         ("60-slot-dark", Screen::Slot, true, &|app| {
@@ -1947,6 +1947,7 @@ fn router_link() -> Link {
         generation: Some(5),
         mac: "02:00:00:00:00:04".into(),
         reach: Some(Reach::Online),
+        by_hand: false,
     }
 }
 

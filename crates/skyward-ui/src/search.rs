@@ -56,12 +56,12 @@ pub const ENTRIES: &[Entry] = &[
     entry(page::RESTORE, HOME, Screen::Restore, keys::RESTORE),
     entry(MOUNT, HOME, Screen::Mount, keys::MOUNT),
     entry(page::WIPE, HOME, Screen::Wipe, keys::WIPE),
-    // 高级页已去掉（2026-11-27）：这些条目现在都在首页的「其他」那一栏。
-    entry(page::FILES, HOME, Screen::Files, keys::FILES),
-    entry(page::TERMINAL, HOME, Screen::Terminal, keys::TERMINAL),
-    entry(page::RELABEL, HOME, Screen::Relabel, keys::RELABEL),
-    entry(page::FILESYSTEMS, HOME, Screen::Filesystems, keys::FILESYSTEMS),
-    entry(page::LOGS, HOME, Screen::Logs, keys::LOGS),
+    entry(ADVANCED, HOME, Screen::Advanced, keys::ADVANCED),
+    entry(page::FILES, ADVANCED, Screen::Files, keys::FILES),
+    entry(page::TERMINAL, ADVANCED, Screen::Terminal, keys::TERMINAL),
+    entry(page::RELABEL, ADVANCED, Screen::Relabel, keys::RELABEL),
+    entry(page::FILESYSTEMS, ADVANCED, Screen::Filesystems, keys::FILESYSTEMS),
+    entry(page::LOGS, ADVANCED, Screen::Logs, keys::LOGS),
     entry(page::UPDATE, ADVANCED, Screen::Update, keys::UPDATE),
     entry(SETTINGS, HOME, Screen::Settings, keys::SETTINGS),
     entry(texts::settings::DARK_MODE, SETTINGS, Screen::Settings, keys::DARK_MODE),
@@ -97,28 +97,15 @@ pub const ENTRIES: &[Entry] = &[
 
 /// The entries `query` finds, best first: a title in `l` holding it, then a
 /// key starting with it, then a key holding it. The keys are those of `l`
-/// and the English ones. `names` is what the owner called the home page's
-/// entries, so a feature renamed there is found by its own name too
-/// (2026-11-27).
-pub fn find(query: &str, l: Lang, names: &std::collections::BTreeMap<String, String>) -> Vec<&'static Entry> {
+/// and the English ones.
+pub fn find(query: &str, l: Lang) -> Vec<&'static Entry> {
     let q = typed(query.trim());
     if q.is_empty() {
         return Vec::new();
     }
-    // 主人给首页那一条起的名字：这一页现在也叫这个（2026-11-27）。
-    let homes: Vec<(Screen, &str)> = crate::app::default_rest()
-        .into_iter()
-        .filter_map(|entry| {
-            names
-                .get(entry.id())
-                .filter(|name| !name.is_empty())
-                .map(|name| (entry.screen(), name.as_str()))
-        })
-        .collect();
-    let own = |screen: Screen| homes.iter().find(|(there, _)| *there == screen).map(|(_, name)| *name);
     let rank = |e: &Entry| {
         let keys = || l.pick(e.keys).split(' ').chain(Lang::En.pick(e.keys).split(' '));
-        if typed(l.pick(e.title)).contains(&q) || own(e.screen).is_some_and(|name| typed(name).contains(&q)) {
+        if typed(l.pick(e.title)).contains(&q) {
             Some(0)
         } else if keys().any(|k| k.starts_with(&q)) {
             Some(1)
@@ -135,23 +122,8 @@ pub fn find(query: &str, l: Lang, names: &std::collections::BTreeMap<String, Str
 
 /// What [`find`] finds that the phone has, as `offers` tells of each page:
 /// a phone whose WLAN the recovery does not bring up has no WLAN page.
-pub fn find_on(
-    query: &str,
-    l: Lang,
-    names: &std::collections::BTreeMap<String, String>,
-    offers: impl Fn(Screen) -> bool,
-) -> Vec<&'static Entry> {
-    find(query, l, names).into_iter().filter(|e| offers(e.screen)).collect()
-}
-
-/// 这一页在首页上被主人叫什么；没改过名字就是 `None`（2026-11-27）。
-pub fn home_name(screen: Screen, names: &std::collections::BTreeMap<String, String>) -> Option<&str> {
-    crate::app::default_rest().into_iter().find_map(|entry| {
-        if entry.action() != crate::app::Action::Open(screen) {
-            return None;
-        }
-        names.get(entry.id()).filter(|name| !name.is_empty()).map(String::as_str)
-    })
+pub fn find_on(query: &str, l: Lang, offers: impl Fn(Screen) -> bool) -> Vec<&'static Entry> {
+    find(query, l).into_iter().filter(|e| offers(e.screen)).collect()
 }
 
 #[cfg(test)]
@@ -159,7 +131,7 @@ mod tests {
     use super::*;
 
     fn titles(query: &str) -> Vec<&'static str> {
-        find(query, Lang::Hans, &Default::default()).iter().map(|e| Lang::Hans.pick(e.title)).collect()
+        find(query, Lang::Hans).iter().map(|e| Lang::Hans.pick(e.title)).collect()
     }
 
     #[test]
@@ -193,8 +165,8 @@ mod tests {
     #[test]
     fn the_wlan_is_found_where_the_phone_has_it() {
         assert_eq!(titles("wifi"), ["WLAN"]);
-        assert_eq!(find_on("wlan", Lang::Hans, &Default::default(), |_| true).iter().map(|e| Lang::Hans.pick(e.title)).collect::<Vec<_>>(), ["WLAN"]);
-        assert!(find_on("wlan", Lang::Hans, &Default::default(), |s| s != Screen::Wlan).is_empty());
+        assert_eq!(find_on("wlan", Lang::Hans, |_| true).iter().map(|e| Lang::Hans.pick(e.title)).collect::<Vec<_>>(), ["WLAN"]);
+        assert!(find_on("wlan", Lang::Hans, |s| s != Screen::Wlan).is_empty());
         assert_eq!(titles("xiazai"), ["系统更新", "Skyward 更新"]);
     }
 
@@ -202,33 +174,33 @@ mod tests {
     fn the_second_system_is_found_where_the_phone_can_hold_one() {
         assert_eq!(titles("sxt"), ["双系统"]);
         assert_eq!(titles("qiehuan"), ["双系统"]);
-        assert_eq!(find("dual", Lang::En, &Default::default()).iter().map(|e| Lang::En.pick(e.title)).collect::<Vec<_>>(), ["Dual boot"]);
-        assert!(find_on("shuangxitong", Lang::Hans, &Default::default(), |s| s != Screen::Systems).is_empty());
+        assert_eq!(find("dual", Lang::En).iter().map(|e| Lang::En.pick(e.title)).collect::<Vec<_>>(), ["Dual boot"]);
+        assert!(find_on("shuangxitong", Lang::Hans, |s| s != Screen::Systems).is_empty());
     }
 
     #[test]
     fn skyward_is_updated_from_its_own_page() {
         assert_eq!(titles("skyward"), ["Skyward 更新"]);
         assert_eq!(titles("gengxin"), ["系统更新", "Skyward 更新"]);
-        assert!(find_on("skyward", Lang::Hans, &Default::default(), |s| s != Screen::SkywardUpdate).is_empty());
+        assert!(find_on("skyward", Lang::Hans, |s| s != Screen::SkywardUpdate).is_empty());
     }
 
     #[test]
     fn a_title_is_found_in_the_language_the_pages_speak() {
-        let english = |query| find(query, Lang::En, &Default::default()).iter().map(|e| Lang::En.pick(e.title)).collect::<Vec<_>>();
+        let english = |query| find(query, Lang::En).iter().map(|e| Lang::En.pick(e.title)).collect::<Vec<_>>();
         assert_eq!(english("brightness"), ["Screen brightness"]);
         assert_eq!(english("about"), ["About phone"]);
         assert_eq!(english("wi-fi"), ["Wi-Fi"]);
-        let traditional = find("設定", Lang::Hant, &Default::default());
+        let traditional = find("設定", Lang::Hant);
         assert_eq!(traditional.first().map(|e| Lang::Hant.pick(e.title)), Some("設定"));
-        assert!(find("设置", Lang::Hant, &Default::default()).is_empty(), "the simplified title belongs to the other script");
+        assert!(find("设置", Lang::Hant).is_empty(), "the simplified title belongs to the other script");
     }
 
     #[test]
     fn a_language_answers_to_its_own_keys_and_the_english_ones() {
-        assert!(find("beifen", Lang::En, &Default::default()).is_empty(), "pinyin is Chinese's own");
+        assert!(find("beifen", Lang::En).is_empty(), "pinyin is Chinese's own");
         for l in Lang::ALL {
-            let found: Vec<Screen> = find("sideload", l, &Default::default()).iter().map(|e| e.screen).collect();
+            let found: Vec<Screen> = find("sideload", l).iter().map(|e| e.screen).collect();
             assert_eq!(found, [Screen::Install], "{l:?} finds installing from a computer by the name every language borrows");
         }
     }
@@ -244,7 +216,7 @@ mod tests {
         for l in Lang::ALL {
             for e in ENTRIES {
                 let title = typed(l.pick(e.title));
-                let found = find(&title, l, &Default::default());
+                let found = find(&title, l);
                 assert!(found.iter().any(|f| f.screen == e.screen && l.pick(f.title) == l.pick(e.title)), "{l:?} finds {title:?} by its own title");
             }
         }
@@ -263,8 +235,8 @@ mod tests {
 
     #[test]
     fn nothing_typed_finds_nothing() {
-        assert!(find("", Lang::Hans, &Default::default()).is_empty());
-        assert!(find("   ", Lang::En, &Default::default()).is_empty());
-        assert!(find("zzzz", Lang::Hant, &Default::default()).is_empty());
+        assert!(find("", Lang::Hans).is_empty());
+        assert!(find("   ", Lang::En).is_empty());
+        assert!(find("zzzz", Lang::Hant).is_empty());
     }
 }

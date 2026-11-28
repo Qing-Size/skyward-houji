@@ -53,11 +53,7 @@ mod tests {
     #[test]
     fn relabeling_starts_once_the_data_partition_is_open_and_its_page_follows_it() {
         let (f, i) = (fonts(), info());
-        // 文件标签默认搬到了首页「其他」（2026-11-27）：先把各栏展开再点。
-        let mut app = App::new(Screen::Home, W, H, PPD);
-        app.state.home_sections.iter_mut().for_each(|section| section.collapsed = false);
-        app.state.home_rest_collapsed = false;
-        app.refresh();
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         tap(&mut app, &f, &i, Action::Open(Screen::Relabel));
         assert_eq!(app.screen(), Screen::Relabel);
         assert!(swipe(&mut app, &f, &i, Confirm::Relabel).is_empty());
@@ -83,7 +79,7 @@ mod tests {
         assert_eq!((job.checked, job.total, job.changed, job.outcome), (12, 400, 3, Some(JobEnd::Stopped)));
         assert!(app.frame(&f, &i).back);
         tap_at(&mut app, &f, &i, Action::Back, 2000);
-        assert_eq!(app.screen(), Screen::Home, "回到它被点开的那一页");
+        assert_eq!(app.screen(), Screen::Advanced);
         assert_eq!(app.state.relabel, None);
     }
 }

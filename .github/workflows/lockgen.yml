@@ -1,0 +1,25 @@
+name: Lockgen
+
+# 仅用于这次 UI 回退：回退 Cargo.toml 后 Cargo.lock 需要重新解析。
+# 在分支上跑一次，产出新的 Cargo.lock 作为 artifact，拉回提交后删除本文件。
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    name: Regenerate Cargo.lock
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - name: Resolve the workspace and rewrite Cargo.lock
+        run: cargo metadata --format-version 1 > /dev/null
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Cargo.lock
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 3

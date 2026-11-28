@@ -166,7 +166,7 @@ fn run(name: &str, f: &Fonts, i: &DeviceInfo, quiet: bool) {
 /// Where on the unscrolled page named `page` each control is, for driving
 /// the panel itself: its centre and what it does.
 fn hits(page: &str, f: &Fonts, i: &DeviceInfo) {
-    let screens = [Screen::Home, Screen::Settings, Screen::Home, Screen::About, Screen::Search];
+    let screens = [Screen::Home, Screen::Settings, Screen::Advanced, Screen::About, Screen::Search];
     let screen = screens.into_iter().find(|s| format!("{s:?}") == page).unwrap_or_else(|| panic!("no page {page} among {screens:?}"));
     let mut p = Panel::new(screen, f, i, true);
     let (x, y) = widgets::back_rect(&p.app.theme()).centre();
@@ -181,7 +181,7 @@ fn hits(page: &str, f: &Fonts, i: &DeviceInfo) {
 /// theme and held down; only the page named `only`, when one is.
 fn renders(f: &Fonts, i: &DeviceInfo, only: Option<&str>, quiet: bool) {
     let state = skyward_ui::app::State::default();
-    let screens = [Screen::Home, Screen::Settings, Screen::Home, Screen::About, Screen::Search, Screen::Install, Screen::Reboot, Screen::Wipe, Screen::Backup, Screen::Specs];
+    let screens = [Screen::Home, Screen::Settings, Screen::Advanced, Screen::About, Screen::Search, Screen::Install, Screen::Reboot, Screen::Wipe, Screen::Backup, Screen::Specs];
     for t in [Theme::light(W, H, PPD), Theme::light(W, H, PPD).pressed()] {
         for screen in screens.into_iter().filter(|s| only.is_none_or(|o| format!("{s:?}") == o)) {
             let time = |band| {
@@ -361,7 +361,7 @@ fn info() -> DeviceInfo {
             cycles: None,
             design: None,
             full: None,
-            voltage: None, current: None,
+            voltage: None,
             quick: false,
             plugged: true,
         }),

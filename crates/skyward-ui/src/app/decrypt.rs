@@ -60,18 +60,6 @@ impl App {
     /// The data partition is open: every user's own files with it, or
     /// those of `waiting`, the user and the control their screen lock is
     /// answered with, still closed.
-    /// The picture the phone shows for its owner has been read, and the name
-    /// it gives itself: the home page shows them over the phone's own row.
-    pub fn set_avatar(&mut self, picture: crate::avatar::Avatar) {
-        self.state.avatar = Some(picture);
-        self.refresh();
-    }
-
-    pub fn set_device_name(&mut self, name: String) {
-        self.state.device_name = Some(name);
-        self.refresh();
-    }
-
     pub fn data_waiting(&mut self, waiting: Option<(u32, Keys)>) {
         self.state.data = match waiting {
             Some((user, keys)) => Data::Locked { user, keys, checking: false },
@@ -81,48 +69,21 @@ impl App {
         self.refresh();
     }
 
-    /// The data partition opened with every user's files that the recovery can
-    /// open: the decrypt page is done with, and the pages behind it are what to
-    /// show. Called once what was entered opened the owner's own files, so that
-    /// the page does not stay in front of a partition that is already open.
+    /// The user's own files opened too: the page this one was opened from
+    /// shows again, the home page where it was opened from nothing. A page
+    /// that is not asking for a screen lock stays as it is.
     pub fn decrypted(&mut self) {
-        if !matches!(self.state.data, Data::Open) {
-            return;
-        }
-        // The partition is open, so the decrypt page has done its work: the
-        // menu is what to show, whether or not it was this page that opened it
-        // — a start that kept the lock opens it with nobody looking at one.
-        self.show_menu();
-    }
-
-    /// 主页就是该在的那一页：分区没有人要问什么（没有加密），或者问过的
-    /// 都答完了。别的页面让开，解密页自己也一样；已经在主页上就只是重画。
-    pub fn show_menu(&mut self) {
-        if self.screen() == Screen::Home {
-            self.refresh();
+        if self.screen() != Screen::Decrypt || self.state.data != Data::Open {
             return;
         }
         self.leave(true);
-        while self.stack.len() > 1 {
+        if self.stack.len() > 1 {
             self.stack.pop();
+        } else {
+            *self.top_mut() = (Screen::Home, 0.0, Focus::Unset);
         }
-        *self.top_mut() = (Screen::Home, 0.0, Focus::Unset);
         self.settle_page();
         self.refresh();
-    }
-
-    /// Bring the decrypt page to the front: on a start that shows the home
-    /// page while the partition opens, it is the page that answers a user's
-    /// screen lock, and the one that says why a partition did not open and
-    /// offers to try again. It asks nothing of the runtime here -- the page
-    /// asks for what it needs as it opens -- so a failed opening does not
-    /// start itself over as the page comes forward.
-    pub fn show_decrypt(&mut self) {
-        if self.screen() == Screen::Decrypt {
-            self.refresh();
-            return;
-        }
-        self.open(Screen::Decrypt);
     }
 
     /// The data partition did not open, and why.
@@ -213,33 +174,9 @@ mod tests {
     }
 
     #[test]
-    fn a_partition_no_screen_lock_waits_on_leaves_the_menu_where_it_is() {
-        let (f, i) = (fonts(), info());
-        // 开机落的页面是主页：分区打开后没有谁的屏锁等着回答（没有加密，
-        // 或者没有人设过屏锁），就没有解密的页面可看，主页留在原处。
-        let mut app = App::new(Screen::Home, W, H, PPD);
-        app.data_waiting(None);
-        app.decrypted();
-        assert_eq!(app.screen(), Screen::Home, "no lock to answer, so no decrypt page");
-        // 有人等着回答：那一刻才翻到解密页，它的控件就是答这把锁的。
-        let mut app = App::new(Screen::Home, W, H, PPD);
-        app.data_waiting(Some((0, Keys::Digits)));
-        app.show_decrypt();
-        assert_eq!(app.screen(), Screen::Decrypt);
-        assert!(keys_shown(&mut app, &f, &i), "the page's keypad answers it");
-        // 已经在那一页时不再翻一次。
-        app.show_decrypt();
-        assert_eq!(app.screen(), Screen::Decrypt);
-    }
-
-    #[test]
     fn the_decrypt_page_opens_the_partition_and_then_asks_with_the_users_own_control() {
         let (f, i) = (fonts(), info());
-        // 解密那条默认搬到了首页「其他」；这里测页面本身，让高级页先显示它。
         let mut app = App::new(Screen::Home, W, H, PPD);
-        app.state.home_sections.iter_mut().for_each(|s| s.collapsed = false);
-        app.state.home_rest_collapsed = false;
-        app.refresh();
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Decrypt)), vec![Effect::OpenData], "no swipe first");
         assert_eq!(app.state.data, Data::Opening);
         assert!(!keys_shown(&mut app, &f, &i) && app.frame(&f, &i).pattern.is_none(), "nothing to answer yet");
@@ -328,6 +265,17 @@ mod tests {
         let fx = app.touch(Touch::Up, &f, 0);
         assert!(fx.is_empty());
         assert_eq!(app.deadline(0), Some(TOAST_MS), "the page says how many dots it takes");
+    }
+
+    #[test]
+    fn every_users_files_open_gives_way_to_home() {
+        let mut app = App::new(Screen::Decrypt, W, H, PPD);
+        app.data_waiting(Some((0, Keys::Digits)));
+        app.decrypted();
+        assert_eq!(app.screen(), Screen::Decrypt, "the owner's files still wait");
+        app.data_waiting(None);
+        app.decrypted();
+        assert_eq!((app.screen(), app.stack.len()), (Screen::Home, 1), "the page it opened from nothing gives way to home");
     }
 
     #[test]

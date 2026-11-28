@@ -6,9 +6,6 @@ use super::*;
 /// Where the USB drive plugged in is shown.
 pub const USB_DRIVE: &str = "/mnt/usb";
 
-/// Where the owner's shared storage sits, as the data partition shows it.
-pub const SDCARD: &str = "/sdcard";
-
 /// What a USB drive plugged in that cannot be read is said to be, and what
 /// is asked for while none is plugged in.
 pub const USB_DRIVE_UNREADABLE: Text = texts::usb_drive::UNREADABLE;
@@ -89,44 +86,6 @@ pub struct FileJob {
     pub outcome: Option<JobEnd>,
     /// Stopping was asked for and is under way.
     pub stopping: bool,
-}
-
-/// The order the file manager shows a folder's entries in.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SortKey {
-    #[default]
-    Name,
-    Size,
-    Modified,
-    Type,
-}
-
-/// Sort `rows` by `key`, folded over where `desc`, with folders first where
-/// asked; ties fall back to the name so the order is the same every time.
-pub fn sort_rows(rows: &mut [FileRow], key: SortKey, desc: bool, folders_first: bool) {
-    let folder = |r: &FileRow| matches!(r.kind, FileKind::Folder { .. } | FileKind::Link { folder: true, .. }) && folders_first;
-    rows.sort_by(|a, b| {
-        let by_name = a.name.to_lowercase().cmp(&b.name.to_lowercase());
-        let order = match key {
-            SortKey::Name => by_name,
-            SortKey::Size => a.size.cmp(&b.size).then(by_name),
-            SortKey::Modified => a.modified.cmp(&b.modified).then(by_name),
-            SortKey::Type => type_group(&a.name).cmp(&type_group(&b.name)).then(by_name),
-        };
-        let order = if desc { order.reverse() } else { order };
-        folder(b).cmp(&folder(a)).then(order)
-    });
-}
-
-/// What a name's extension makes of it, as sorting by type groups entries.
-fn type_group(name: &str) -> u8 {
-    match std::path::Path::new(name).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
-        Some("zip" | "apk" | "img" | "bin" | "tar" | "gz" | "xz" | "lz4") => 0,
-        Some("jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "mp4" | "mkv" | "mov") => 1,
-        Some("txt" | "log" | "md" | "json" | "xml" | "prop" | "rc" | "sh") => 2,
-        Some(_) => 3,
-        None => 4,
-    }
 }
 
 /// An entry of a folder, as the file manager lists it.
@@ -249,7 +208,6 @@ impl App {
     /// enough to, with a tap of the motor.
     pub(super) fn held_entry(&mut self, i: usize) -> Vec<Effect> {
         let entry = self.state.files.entry(i).clone();
-        self.state.file_on_drive = false;
         self.state.file = Some(entry);
         self.state.asking_delete = false;
         self.open(Screen::FileInfo);
@@ -333,12 +291,6 @@ impl App {
     /// The runtime listed a folder of `place` at `listed`, its path from
     /// the place's top, or could not: it becomes the folder shown to choose
     /// a file to install in, with what it holds that may be installed.
-    /// The OTG drive's folder was read: shown on its own page, every entry of
-    /// it, folders and files alike.
-    pub fn set_otg(&mut self, folder: String, files: Result<Vec<FileRow>, String>, listed: i64) {
-        self.show_folder(Screen::FilesOtg, folder, files, listed);
-    }
-
     pub fn set_place(&mut self, place: Place, folder: String, files: Result<Vec<FileRow>, String>, listed: i64) {
         let files = files.map(|entries| entries.into_iter().filter(installable).collect());
         self.show_folder(Screen::Choose(place), folder, files, listed);
@@ -386,16 +338,6 @@ impl App {
     /// `folder` becomes the one the list on page `screen` shows. A folder
     /// gone back up to shows where it was left, as the stock file manager
     /// does; any other starts from its top.
-    /// Sort the folder the file manager shows again, as the sort row changed
-    /// what it is sorted by.
-    pub(super) fn resort_files(&mut self) {
-        let (key, desc, folders_first) = (self.state.sort, self.state.sort_desc, self.state.folders_first);
-        if let Ok(entries) = &mut self.state.files.entries {
-            sort_rows(entries, key, desc, folders_first);
-        }
-        self.refresh();
-    }
-
     fn show_folder(&mut self, screen: Screen, folder: String, files: Result<Vec<FileRow>, String>, listed: i64) {
         let left = &self.state.folder(screen).path;
         if folder != *left && self.screen() == screen {
@@ -425,14 +367,6 @@ impl App {
         {
             *file = listed.clone();
         }
-        // The entries are shown in the order the page keeps: the file manager's
-        // own, which the sort row changes and the starts remember.
-        let files = files.map(|mut entries| {
-            if screen == Screen::Files {
-                sort_rows(&mut entries, self.state.sort, self.state.sort_desc, self.state.folders_first);
-            }
-            entries
-        });
         let shown = self.state.folder_mut(screen);
         shown.path = folder;
         shown.entries = files;
@@ -450,7 +384,7 @@ mod tests {
     #[test]
     fn the_file_manager_walks_folders_and_back_up_to_the_root() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Files)), vec![Effect::ReadDir("/".into())]);
         let link = FileKind::Link { target: "/storage/self/primary".into(), folder: true };
         app.set_files("/".into(), Ok(vec![entry("sdcard", link), entry("vendor", folder(12)), entry("init.rc", FileKind::File)]), LISTED);
@@ -460,16 +394,15 @@ mod tests {
         assert_eq!(app.key(Key::Back, 0), vec![Effect::ReadDir("/".into())], "back climbs a folder");
         assert_eq!(app.screen(), Screen::Files);
         app.set_files("/".into(), Ok(vec![entry("vmlinux", FileKind::File), entry("init.rc", FileKind::File)]), LISTED);
-        // The page sorts what it is given: by name, init.rc comes first.
-        assert_eq!(tap(&mut app, &f, &i, Action::OpenEntry(0)), vec![Effect::OpenText("/init.rc".into())], "a text file opens to edit");
+        assert_eq!(tap(&mut app, &f, &i, Action::OpenEntry(1)), vec![Effect::OpenText("/init.rc".into())], "a text file opens to edit");
         assert_eq!(app.screen(), Screen::Files);
-        tap(&mut app, &f, &i, Action::OpenEntry(1));
+        tap(&mut app, &f, &i, Action::OpenEntry(0));
         assert_eq!(app.screen(), Screen::FileInfo);
         assert_eq!(app.state.file.as_ref().map(|e| e.name.as_str()), Some("vmlinux"));
         app.key(Key::Back, 0);
         assert_eq!(app.state.file, None);
         assert!(app.key(Key::Back, 0).is_empty(), "at the root, back leaves");
-        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.screen(), Screen::Advanced);
     }
 
     #[test]
@@ -678,40 +611,6 @@ mod tests {
     }
 
     #[test]
-    fn several_entries_are_chosen_and_then_copied_or_deleted_together() {
-        let (f, i) = (fonts(), info());
-        let mut app = in_sdcard(&f, &i);
-        // Choosing starts from the page's own button, and the rows tick.
-        assert!(app.act(Action::ChooseMany(true), 0).is_empty());
-        assert!(app.state.choosing);
-        assert!(app.act(Action::ChooseEntryAt(0), 0).is_empty());
-        assert_eq!(app.state.chosen.len(), 1);
-        app.act(Action::ChooseEntryAt(1), 0);
-        assert_eq!(app.state.chosen.len(), 2, "two chosen");
-        app.act(Action::ChooseEntryAt(1), 0);
-        assert_eq!(app.state.chosen.len(), 1, "and one put back");
-        // All of them, and then none.
-        app.act(Action::ChooseAll, 0);
-        assert_eq!(app.state.chosen.len(), 2);
-        app.act(Action::ChooseAll, 0);
-        assert!(app.state.chosen.is_empty());
-        // Copying the chosen ones goes to the folder shown, all at once.
-        app.act(Action::ChooseEntryAt(0), 0);
-        app.act(Action::ChooseEntryAt(1), 0);
-        let fx = app.act(Action::PasteChosen(FileOp::Copy), 0);
-        assert_eq!(fx.len(), 1);
-        assert!(matches!(&fx[0], Effect::PasteMany { op: FileOp::Copy, paths, into, .. } if paths.len() == 2 && into == "/sdcard"));
-        assert!(!app.state.choosing && app.state.chosen.is_empty(), "the choosing is over");
-        // Deleting them asks first, with the swipe, and nothing goes before it.
-        app.act(Action::ChooseMany(true), 0);
-        app.act(Action::ChooseAll, 0);
-        assert!(app.act(Action::AskDeleteChosen, 0).is_empty());
-        assert!(app.state.asking_many.is_some(), "the card asks");
-        assert_eq!(swipe(&mut app, &f, &i, Confirm::DeleteEntry).len(), 1);
-        assert!(app.state.asking_many.is_none(), "answered");
-    }
-
-    #[test]
     fn deleting_asks_with_a_swipe_and_runs_on_its_page() {
         let (f, i) = (fonts(), info());
         let mut app = in_sdcard(&f, &i);
@@ -739,7 +638,7 @@ mod tests {
         app.compose(&mut c, &f, &i, "12:00", 0);
         app.file_job_ended(JobEnd::Stopped, 0);
         app.compose(&mut c, &f, &i, "12:00", 16);
-        assert_eq!(app.titles.as_ref().map(|((title, _), _, _)| title.as_ref()), Some("复制未完成"));
+        assert_eq!(app.titles.as_ref().map(|((title, _), _, _)| *title), Some("复制未完成"));
     }
 
     #[test]
@@ -774,7 +673,7 @@ mod tests {
     #[test]
     fn a_folder_gone_back_up_to_shows_where_it_was_left() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         tap(&mut app, &f, &i, Action::Open(Screen::Files));
         let folders = Vec::from_fn(300, |k| entry(&format!("dir{k:03}"), folder(k)));
         app.set_files("/".into(), Ok(folders.clone()), LISTED);
@@ -793,7 +692,7 @@ mod tests {
     #[test]
     fn a_folder_opened_or_gone_back_up_to_has_its_bar_from_its_first_frame() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         tap(&mut app, &f, &i, Action::Open(Screen::Files));
         let folders = Vec::from_fn(300, |k| entry(&format!("dir{k:03}"), folder(k)));
         app.set_files("/".into(), Ok(folders.clone()), LISTED);
@@ -834,107 +733,18 @@ mod tests {
         app.compose(&mut c, &f, &i, "12:00", 2000);
         let (x, _) = spot(&mut app, &f, &i, Action::OpenAncestor(0));
         let px = |c: &Canvas, x: f32, y: f32| c.data[(y as usize * W as usize + x as usize) * 4..][..3].to_vec();
-        assert_eq!(px(&c, x, y), vec![243, 244, 247], "the root's capsule shows over the list");
+        assert_eq!(px(&c, x - t.m.dp(20.0), y), vec![243, 244, 247], "the root's capsule shows over the list");
         assert_eq!(tap_at(&mut app, &f, &i, Action::OpenAncestor(0), 3000), vec![Effect::ReadDir("/".into())]);
-        // 搜索与 U 盘已挪到顶栏，跟在返回按钮的右边。
-        let frame = app.frame(&f, &i);
-        assert!(frame.title_art.is_some(), "the round icons sit beside the page's title");
-        assert!(frame.bar_hits.iter().any(|h| h.action == Action::SearchFiles), "the search icon is there");
-        assert!(frame.bar_hits.iter().any(|h| h.action == Action::FilesOtg), "and the drive's icon beside it");
-    }
-
-    #[test]
-    fn the_locks_slide_is_narrower_than_the_page_and_centred() {
-        let app = App::new(Screen::Home, W, H, PPD);
-        let t = app.theme();
-        let track = app.lock_track();
-        let across = W as f32 - t.m.margin * 2.0;
-        assert!(track.w < across, "the slide is narrower than the page: {} of {}", track.w, across);
-        assert!((track.x - (W as f32 - track.w) / 2.0).abs() < 0.5, "and centred: x {} w {}", track.x, track.w);
-        // What is drawn is the same rect a finger lands on.
-        let mut c = Canvas::new(W, H);
-        let drawn = crate::widgets::confirm_in(&mut c, &t, &fonts(), track, "Slide to unlock", false, 0.0);
-        assert_eq!(drawn, track, "drawn where the finger is looked for");
-    }
-
-    #[test]
-    fn a_file_goes_to_the_drive_and_one_on_it_comes_back() {
-        let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Files, W, H, PPD);
-        app.state.usb_drive = Some(UsbDrive::Shown);
-        app.set_files("/sdcard/Download".into(), Ok(vec![entry("a.zip", FileKind::File)]), LISTED);
-        app.state.file_on_drive = false;
-        app.state.file = Some(entry("a.zip", FileKind::File));
-        // Picked and taken to the drive's page, where the folder it goes into
-        // is walked to; the bar at the foot puts it down there.
-        assert_eq!(app.act(Action::ToDrive(FileOp::Copy), 0), vec![Effect::ReadOtg(String::new())]);
-        assert_eq!(app.screen(), Screen::FilesOtg, "the drive's page is opened");
-        assert_eq!(app.state.clip.as_ref().map(|c| c.path.as_str()), Some("/sdcard/Download/a.zip"));
-        // Off the drive and back onto the phone's shared storage.
-        app.set_otg("DCIM".into(), Ok(vec![entry("b.jpg", FileKind::File)]), LISTED);
-        app.state.file_on_drive = true;
-        app.state.file = Some(entry("b.jpg", FileKind::File));
-        assert_eq!(app.act(Action::ToPhone(FileOp::Move), 0), vec![Effect::ReadDir("/sdcard/Download".into())]);
-        assert_eq!(app.screen(), Screen::Files, "the phone's page is opened");
-        assert_eq!(app.state.clip.as_ref().map(|c| c.path.as_str()), Some("/mnt/usb/DCIM/b.jpg"), "the entry comes back picked");
-        // With no drive plugged in, nothing is started.
-        app.state.usb_drive = None;
-        app.state.file_on_drive = false;
-        assert_eq!(app.act(Action::ToDrive(FileOp::Copy), 0), Vec::<Effect>::new());
-    }
-
-    #[test]
-    fn keeping_the_lock_asks_first_every_time_it_is_turned_on() {
-        let (f, i) = (fonts(), info());
-        // On the decrypt page, once the lock has been typed in.
-        let mut app = App::new(Screen::Decrypt, W, H, PPD);
-        app.state.data = Data::Locked { user: 0, keys: Keys::Letters, checking: false };
-        app.state.code = "1234".into();
-        // Off: the first tap puts the risk up and leaves the switch off.
-        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::Remember)), Vec::<Effect>::new());
-        assert!(app.state.asking_remember, "the risk is shown");
-        assert!(!app.state.remember, "and the switch stays off");
-        // A second tap puts the risk away again.
-        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::Remember)), Vec::<Effect>::new());
-        assert!(!app.state.asking_remember);
-        // Turned on with the slider, it is kept.
-        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::Remember)), Vec::<Effect>::new());
-        app.state.confirm = 1.0;
-        assert_eq!(app.confirmed(Confirm::KeepLock, 2000), vec![Effect::Haptic, Effect::Remember(true)]);
-        assert!(app.state.remember, "now kept");
-        assert!(!app.state.asking_remember);
-        // Turned off, then on again: the risk is asked again.
-        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::Remember)), vec![Effect::Remember(false)]);
-        assert!(!app.state.remember);
-        assert_eq!(tap(&mut app, &f, &i, Action::Toggle(Switch::Remember)), Vec::<Effect>::new());
-        assert!(app.state.asking_remember, "asked again the second time it is turned on");
-        assert!(!app.state.remember);
-    }
-
-    #[test]
-    fn the_otg_pill_at_the_top_opens_the_drive() {
-        let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Files, W, H, PPD);
-        app.set_files("/sdcard".into(), Ok(vec![]), LISTED);
-        app.state.usb_drive = Some(UsbDrive::Shown);
-        // U 盘已经从页面挪到顶栏，成了一枚圆钮。
-        let frame = app.frame(&f, &i);
-        assert!(frame.bar_hits.iter().any(|h| h.action == Action::FilesOtg), "the drive's icon sits beside the back arrow");
-        let done = app.act(Action::FilesOtg, 1000);
-        assert_eq!(app.screen(), Screen::FilesOtg, "the round button opens the drive");
-        assert!(matches!(done.as_slice(), [Effect::ReadOtg(_)]), "and reads it: {done:?}");
-        // The folder read comes back and the page is drawn: the whole way a
-        // tap on the pill goes.
-        let rows = vec![entry("a.zip", FileKind::File), entry("DCIM", FileKind::Folder { items: Some(1) })];
-        app.set_otg(String::new(), Ok(rows), LISTED);
-        let fr = app.frame(&f, &i);
-        assert!(fr.dock.is_none());
+        // The strip's empty end covers the rows beneath it.
+        app.touch(Touch::Down(W as f32 - t.m.dp(40.0), y), &f, 4000);
+        assert!(app.touch(Touch::Up, &f, 4000).is_empty());
+        assert_eq!(app.screen(), Screen::Files);
     }
 
     #[test]
     fn climbing_out_of_a_folder_the_keys_come_back_to_it() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         tap(&mut app, &f, &i, Action::Open(Screen::Files));
         let folders = Vec::from_fn(300, |k| entry(&format!("dir{k:03}"), folder(k)));
         app.set_files("/".into(), Ok(folders.clone()), LISTED);

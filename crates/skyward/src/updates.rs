@@ -12,7 +12,6 @@ use skyward_net::http::{self, Servers};
 use skyward_net::reach::{self, Reach};
 use skyward_net::release::{self, Installed, Release, Unanswered};
 use skyward_vab::Slot;
-use std::io::Read;
 use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -139,7 +138,7 @@ impl Worker {
                 Task::CheckSkyward { probe, codename } => {
                     let a = http::agent(servers.clone());
                     *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                    let answer = github::ask(&a, &codename, skyward_info::RUNNING).map_err(|e| unanswered(&e, github::LATEST, &probe, &servers));
+                    let answer = github::ask(&a, &codename, skyward_info::VERSION).map_err(|e| unanswered(&e, github::LATEST, &probe, &servers));
                     tell(Event::SkywardChecked(answer));
                 }
                 // GitHub's API hands the zip out at a short-lived address
@@ -149,7 +148,7 @@ impl Worker {
                 Task::UpdateSkyward { build, codename, path } => {
                     let a = http::agent(servers.clone());
                     *using.lock().expect("the agent is not held by a thread that panicked") = Some(a.clone());
-                    let located = github::locate(&a, &build.url, skyward_info::RUNNING)
+                    let located = github::locate(&a, &build.url, skyward_info::VERSION)
                         .inspect_err(|e| {
                             let _ = skyward_sys::kmsg(&format!("asking GitHub where {} is: {e:#}", build.name));
                         })
@@ -160,7 +159,7 @@ impl Worker {
                             return Again::Retry;
                         }
                         located_again = true;
-                        match github::locate(a, &build.url, skyward_info::RUNNING) {
+                        match github::locate(a, &build.url, skyward_info::VERSION) {
                             Ok(fresh) => Again::From(build.sources(Some(fresh))),
                             Err(e) => {
                                 let _ = skyward_sys::kmsg(&format!("asking GitHub again where {} is: {e:#}", build.name));
@@ -237,84 +236,6 @@ enum Again {
 /// `urls` in turn, trying again while the connection fails and something
 /// more comes each time; `refused` says what a server turning it down leads
 /// to.
-/// How many bytes a mirror is asked for when it is measured.
-const SAMPLE_BYTES: usize = 256 * 1024;
-
-/// How long a mirror is measured for.
-const SAMPLE_TIME: Duration = Duration::from_secs(3);
-
-/// The address that came fastest last time, kept for a while so asking twice
-/// does not measure every mirror again.
-static FASTEST: Mutex<Option<(String, Instant)>> = Mutex::new(None);
-
-/// How long that answer is kept for.
-const FASTEST_FOR: Duration = Duration::from_secs(30 * 60);
-
-/// How many bytes `url` hands over within [`SAMPLE_TIME`], asked for the first
-/// [`SAMPLE_BYTES`] only. Nothing is kept: this is a measurement.
-fn sample(agent: &ureq::Agent, url: &str) -> usize {
-    let started = Instant::now();
-    let asked = format!("bytes=0-{}", SAMPLE_BYTES - 1);
-    let Ok(mut answer) = agent.get(url).header("Range", asked).call() else {
-        return 0;
-    };
-    let mut reader = answer.body_mut().with_config().limit(u64::MAX).reader();
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut got = 0;
-    while got < SAMPLE_BYTES && started.elapsed() < SAMPLE_TIME {
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => got += n,
-            Err(_) => break,
-        }
-    }
-    got
-}
-
-/// The addresses, the one measured fastest first, all measured at once: a
-/// mirror that never answers must not hold up the ones that do.
-pub(crate) fn by_speed(servers: &Servers, urls: Vec<String>) -> Vec<String> {
-    if urls.len() < 2 {
-        return urls;
-    }
-    let agent = http::probe_agent(servers.clone());
-    let measured: Vec<(usize, String)> = thread::scope(|scope| {
-        let measuring: Vec<_> = urls
-            .iter()
-            .map(|url| {
-                let agent = agent.clone();
-                scope.spawn(move || (sample(&agent, url), url.clone()))
-            })
-            .collect();
-        measuring.into_iter().map(|m| m.join().unwrap_or((0, String::new()))).collect()
-    });
-    let mut measured = measured;
-    measured.sort_by(|a, b| b.0.cmp(&a.0));
-    // Whichever answered last time, first, so a page asked twice settles at
-    // once; the measurement still puts it back if it has gone slow.
-    let known = FASTEST
-        .lock()
-        .ok()
-        .and_then(|k| k.clone())
-        .filter(|(_, at)| at.elapsed() < FASTEST_FOR)
-        .map(|(url, _)| url);
-    if let Some(known) = known {
-        if let Some(at) = measured.iter().position(|(_, url)| *url == known) {
-            let first = measured.remove(at);
-            measured.insert(0, first);
-        }
-    }
-    for (got, url) in &measured {
-        let _ = skyward_sys::kmsg(&format!("asking {} first: {got} bytes came in three seconds", host(url)));
-    }
-    if let Some((_, url)) = measured.first() {
-        if let Ok(mut known) = FASTEST.lock() {
-            *known = Some((url.clone(), Instant::now()));
-        }
-    }
-    measured.into_iter().map(|(_, url)| url).collect()
-}
-
 #[allow(clippy::too_many_arguments)]
 fn fetch(
     servers: &Servers,
@@ -327,8 +248,6 @@ fn fetch(
     tell: &dyn Fn(Event),
     refused: &mut dyn FnMut(&ureq::Agent) -> Again,
 ) -> End {
-    // The fastest mirror first, measured before a byte is taken from it.
-    let mut urls = by_speed(servers, urls);
     let mut url = 0;
     let mut failed = 0;
     let mut samples: Vec<(Instant, u64)> = Vec::new();

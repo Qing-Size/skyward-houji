@@ -39,8 +39,10 @@ const HOME: &str = "/skyward/run/supplicant";
 const WIFI: u32 = 1010;
 
 /// How long the driver may take to make its interface, the chip's firmware
-/// loading meanwhile.
-const INTERFACE_WAIT: Duration = Duration::from_secs(20);
+/// loading meanwhile. The WLAN chip's own firmware is tens of megabytes read
+/// from the modem partition, and on the 14 the interface is seen well after
+/// half a minute, so the wait is generous rather than tight.
+const INTERFACE_WAIT: Duration = Duration::from_secs(60);
 
 /// How long the supplicant may take to open its control socket.
 const SOCKET_WAIT: Duration = Duration::from_secs(10);
@@ -48,19 +50,12 @@ const SOCKET_WAIT: Duration = Duration::from_secs(10);
 /// How long the supplicant gets to end once asked to.
 const END_WAIT: Duration = Duration::from_secs(3);
 
-/// 离开前给射频多少时间落定：写开关、等驱动放手、卸模块。
-const PUT_AWAY_WAIT: Duration = Duration::from_secs(2);
-
 /// How often a network joined is read for its signal.
 const POLL: Duration = Duration::from_secs(5);
 
 /// How often what went over the interface is counted, for how fast it
 /// goes.
 const TRAFFIC: Duration = Duration::from_secs(1);
-
-/// How long the driver is given after its interface appears before the
-/// supplicant is started on it.
-const SETTLE: Duration = Duration::from_millis(600);
 
 /// How long after the network gave no address it is asked again.
 const RETRY: Duration = Duration::from_secs(10);
@@ -72,24 +67,6 @@ pub enum Command {
     Scan,
     Join { ssid: Vec<u8>, name: String, security: Security, password: String },
     Leave,
-    /// 手动指定的一组 IPv4：不走 DHCP。2026-11-27。
-    Static(Static),
-    /// 改回 DHCP。
-    Dhcp,
-}
-
-/// 手动指定的一组 IPv4：地址、掩码、网关，和 DNS。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Static {
-    pub address: Ipv4Addr,
-    pub mask: Ipv4Addr,
-    pub gateway: Ipv4Addr,
-    pub dns: Vec<Ipv4Addr>,
-}
-
-/// 硬件地址写成 aa:bb:… 的样子，给页面看。
-fn mac_text(mac: [u8; 6]) -> String {
-    mac.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")
 }
 
 /// What comes to the thread: a command, how asking for an address went,
@@ -131,7 +108,7 @@ impl Worker {
         let (inbox, asked) = worker::telling().context("make the WLAN thread's inbox")?;
         let back = inbox.clone();
         let worker = worker::Worker::start("wlan", move |tell| {
-            let mut s = Station { cfg, modules, libraries, servers, state: Wlan::default(), running: None, static_ip: None, back, tell };
+            let mut s = Station { cfg, modules, libraries, servers, state: Wlan::default(), running: None, back, tell };
             s.run(&asked);
         })?;
         Ok(Worker { inbox, worker })
@@ -139,17 +116,6 @@ impl Worker {
 
     pub fn send(&self, c: Command) {
         self.inbox.tell(Inbox::Command(c));
-    }
-
-    /// 把射频收起来再走：让线程把 supplicant 停掉、芯片开关复位、驱动卸掉，
-    /// 等它做完才返回——否则电源一断，芯片停在我们留下的状态里，系统自己的
-    /// 驱动冷启动时可能起不来（2026-11-23）。
-    pub fn stop(self) {
-        self.inbox.tell(Inbox::End);
-        let started = Instant::now();
-        while !self.worker.ended() && started.elapsed() < PUT_AWAY_WAIT {
-            thread::sleep(Duration::from_millis(20));
-        }
     }
 
     /// Readable while the screen has something to be told.
@@ -236,8 +202,6 @@ struct Station {
     servers: Servers,
     state: Wlan,
     running: Option<Running>,
-    /// 手动指定的一组地址；有它就不问 DHCP。2026-11-27。
-    static_ip: Option<Static>,
     /// What a thread asking for an address, or looking how far the
     /// network reaches, answers to: the thread's own inbox.
     back: Teller<Inbox>,
@@ -313,22 +277,6 @@ impl Station {
                 }
                 self.state.joined = None;
             }
-            // 手动 IP：不再问 DHCP，按这组地址连；切回 DHCP 时清掉它再问。
-            // 2026-11-27。
-            Command::Static(st) => {
-                self.unaddress();
-                let _ = skyward_sys::kmsg(&format!("the address {} is taken as set by hand", st.address));
-                self.static_ip = Some(st);
-                self.settle_static();
-            }
-            Command::Dhcp => {
-                self.static_ip = None;
-                self.unaddress();
-                if let Some(j) = &mut self.state.joined {
-                    j.stage = Stage::Addressing;
-                    self.ask_address();
-                }
-            }
         }
     }
 
@@ -388,16 +336,11 @@ impl Station {
 
     fn off(&mut self) {
         self.unaddress();
-        // 刚才真的驱动过芯片没有：驱动过的才需要把它放回去。
-        let driving = self.running.is_some() || Path::new("/sys/class/net").join(&self.cfg.interface).exists();
         if let Some(mut r) = self.running.take() {
             end(&mut r.child, Some(&r.control));
         }
         if let Err(e) = iface::set_up(&self.cfg.interface, false) {
             let _ = skyward_sys::kmsg(&format!("{e:#}"));
-        }
-        if driving {
-            put_away(&self.cfg);
         }
         self.state = Wlan::default();
     }
@@ -463,13 +406,7 @@ impl Station {
         let Some(j) = &mut self.state.joined else { return };
         match j.on(told) {
             Next::Show => {}
-            Next::Address => {
-                if self.static_ip.is_some() {
-                    self.settle_static();
-                } else {
-                    self.ask_address();
-                }
-            }
+            Next::Address => self.ask_address(),
             Next::Unaddress => self.unaddress(),
             Next::Forget => {
                 if let Some(r) = &self.running
@@ -505,65 +442,7 @@ impl Station {
         });
     }
 
-    /// 手动指定的地址生效：配上地址、掩码、默认路由与 DNS，页面当作连上。
-    /// 写不进去就报，让页面显示没有地址。2026-11-27。
-    fn settle_static(&mut self) {
-        let Some(st) = self.static_ip.clone() else { return };
-        let Some(mac) = self.running.as_ref().map(|r| r.mac) else { return };
-        let Some(ssid) = self.state.joined.as_ref().map(|j| j.ssid.clone()) else { return };
-        let (signal, frequency) = self
-            .state
-            .networks
-            .iter()
-            .find(|n| n.ssid == ssid)
-            .map_or((0, 0), |n| (n.signal, n.frequency));
-        if let Err(e) = iface::configure(&self.cfg.interface, st.address, st.mask, Some(st.gateway)) {
-            // 内核不认这组地址（最常见是网关不在同一网段）：说清楚，然后
-            // 回 DHCP，别拿一个配不上的地址每十秒撞一次（2026-11-27 真机）。
-            let _ = skyward_sys::kmsg(&format!(
-                "the manual address did not go: {e:#}; an address is asked for over DHCP instead"
-            ));
-            self.static_ip = None;
-            if let Some(j) = &mut self.state.joined {
-                j.stage = Stage::Addressing;
-            }
-            self.ask_address();
-            return;
-        }
-        *self.servers.lock().expect("the DNS servers are not held by a thread that panicked") = st.dns.clone();
-        if let Some(j) = &mut self.state.joined {
-            j.stage = Stage::Connected(Link {
-                address: st.address,
-                mask: st.mask,
-                router: Some(st.gateway),
-                dns: st.dns.clone(),
-                signal,
-                frequency,
-                speed: None,
-                generation: None,
-                mac: mac_text(mac),
-                reach: None,
-                by_hand: true,
-            });
-        } else {
-            return;
-        }
-        let _ = skyward_sys::kmsg(&format!(
-            "{} has {} ({}) as its own address, through {}, as set by hand",
-            self.cfg.interface, st.address, st.mask, st.gateway
-        ));
-        self.probe(st.dns.clone());
-    }
-
     fn addressed(&mut self, n: u64, answer: Result<Asked>) {
-        // 手动 IP 已经生效：DHCP 的答案（切换前发出去的那次）不要了。
-        if self.static_ip.is_some() {
-            if let Some(r) = &mut self.running {
-                r.asking = None;
-                r.retry_at = None;
-            }
-            return;
-        }
         let Some(r) = &mut self.running else { return };
         if r.asking.as_ref().map(|(m, _)| *m) != Some(n) {
             return;
@@ -669,21 +548,6 @@ impl Station {
 
     fn timers(&mut self) {
         let now = Instant::now();
-        if self.running.is_none() {
-            return;
-        }
-        // 记着手动 IP 却没落到「已连接」的阶段：不管事件顺序怎么绕，这里
-        // 每轮补一次。之前 Next::Address 那条路没走到，地址就一直没配上，
-        // 反而问起了 DHCP（2026-11-27 真机）。
-        if self.static_ip.is_some()
-            && self
-                .state
-                .joined
-                .as_ref()
-                .is_some_and(|j| matches!(j.stage, Stage::Addressing))
-        {
-            self.settle_static();
-        }
         let Some(r) = &mut self.running else { return };
         if r.retry_at.is_some_and(|at| now >= at) {
             r.retry_at = None;
@@ -758,19 +622,34 @@ impl Station {
     }
 }
 
-/// Put the driver's firmware and modules in and tell it it may start, without
-/// waiting for the interface. The recovery does this while the services come
-/// up: the driver takes about eleven seconds to make its interface, and that
-/// time is better spent before the page asks for the WLAN than after it. The
-/// supplicant started right as the interface appears can be too early for the
-/// driver, which is what this buys.
-pub fn warm_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
-    if iface::exists(&cfg.interface) {
-        return Ok(());
+/// Load the driver where its interface is not there yet, and bring the
+/// interface up.
+fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
+    let net = Path::new("/sys/class/net").join(&cfg.interface);
+    if !net.exists() {
+        for file in &cfg.firmware {
+            place(file)?;
+        }
+        load_modules(cfg, modules)?;
+        if wait_interface(&net, INTERFACE_WAIT).is_err() {
+            // The chip's platform driver probes as it is loaded, and a
+            // recovery can reach it before its settings are written: cnss
+            // then gives up with "failed to probe host driver" and makes no
+            // interface. Now that the settings above are in place, take the
+            // driver out and give it another go.
+            for name in cfg.modules.iter().rev() {
+                unload(name);
+            }
+            load_modules(cfg, modules)?;
+            wait_interface(&net, INTERFACE_WAIT)?;
+        }
     }
-    for file in &cfg.firmware {
-        place(file)?;
-    }
+    iface::set_up(&cfg.interface, true)
+}
+
+/// Load the driver's modules with what they depend on, then write the
+/// switches its platform driver waits for.
+fn load_modules(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
     for path in skyward_modules::load(modules, &cfg.modules)? {
         skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
     }
@@ -780,81 +659,32 @@ pub fn warm_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// Load the driver where its interface is not there yet, and bring the
-/// interface up.
-fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
-    let net = Path::new("/sys/class/net").join(&cfg.interface);
-    // When the page asked for the radio, so the log can say how long the driver
-    // took to make its interface.
-    let asked = Instant::now();
-    if !net.exists() {
-        for file in &cfg.firmware {
-            place(file)?;
-        }
-        for path in skyward_modules::load(modules, &cfg.modules)? {
-            skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
-        }
-        for w in &cfg.writes {
-            fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
-        }
-        let until = Instant::now() + INTERFACE_WAIT;
-        while !net.exists() {
-            ensure!(Instant::now() < until, "the driver made no {} in {} seconds", cfg.interface, INTERFACE_WAIT.as_secs());
-            thread::sleep(Duration::from_millis(100));
-        }
+/// Wait for the driver to make its interface, at most `wait`.
+fn wait_interface(net: &Path, wait: Duration) -> Result<()> {
+    let until = Instant::now() + wait;
+    while !net.exists() {
+        ensure!(
+            Instant::now() < until,
+            "the driver made no {} in {} seconds",
+            net.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            wait.as_secs()
+        );
+        thread::sleep(Duration::from_millis(100));
     }
-    // The interface is made before the driver is ready to answer through it:
-    // a supplicant started at the very moment it appears ends as it starts.
-    thread::sleep(SETTLE);
-    let _ = skyward_sys::kmsg(&format!(
-        "{} is there {:.2} s after the driver was asked for it",
-        cfg.interface,
-        asked.elapsed().as_secs_f64()
-    ));
-    iface::set_up(&cfg.interface, true)
+    Ok(())
 }
 
-/// 把芯片的开关放回系统认识的位置，再把驱动卸掉：留着一个还开着的射频，系统
-/// 自己的驱动冷启动时会以为芯片已经就绪，起来的路上就失败（2026-11-23）。
-fn put_away(cfg: &Config) {
-    // 只有配置里说了怎么收尾才收：没配的机型什么都不做，机器还是原来那样。
-    if cfg.release.is_empty() {
-        return;
-    }
-    for w in &cfg.release {
-        if let Err(e) = fs::write(&w.path, &w.value) {
-            let _ = skyward_sys::kmsg(&format!("{} is not given {}: {e}", w.path, w.value));
-        }
-    }
-    if !cfg.release.is_empty() {
-        thread::sleep(Duration::from_millis(300));
-    }
-    for attempt in 0..3 {
-        match skyward_modules::unload(&cfg.modules) {
-            Ok(gone) => {
-                if !gone.is_empty() {
-                    let _ = skyward_sys::kmsg(&format!("{} left the kernel", gone.join(", ")));
-                }
-                return;
-            }
-            Err(e) => {
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(300));
-                } else {
-                    let _ = skyward_sys::kmsg(&format!("the WLAN's driver stays in the kernel: {e:#}"));
-                }
-            }
-        }
-    }
+/// Take a module out of the kernel by name, if it is in.
+fn unload(name: &str) {
+    let Ok(c) = std::ffi::CString::new(name) else { return };
+    // SAFETY: a NUL-terminated name and no flags, as delete_module asks.
+    unsafe { libc::syscall(libc::SYS_delete_module, c.as_ptr(), 0 as libc::c_uint) };
 }
 
 /// Put a file the driver asks for where the firmware loader looks. One the
 /// phone may be without is passed over where the phone has none, and the
 /// loader then tells the driver so, as it does in the phone's own system.
 fn place(file: &Firmware) -> Result<()> {
-    let to = Path::new(FIRMWARE).join(&file.name);
-    let dir = to.parent().expect("a firmware file is in a folder");
-    fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     let held = |path: &Path| match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if file.optional && e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -872,49 +702,78 @@ fn place(file: &Firmware) -> Result<()> {
         }
     };
     match bytes {
-        Some(bytes) => fs::write(&to, bytes).with_context(|| format!("write {}", to.display())),
+        Some(bytes) => {
+            // The recovery's own ueventd looks in /etc/firmware, which is
+            // writable. The phone's looks in the vendor firmware folder too:
+            // put the file in both places so either loader finds it.
+            write_firmware(Path::new(FIRMWARE), &file.name, &bytes)?;
+            let vendor = Path::new("/vendor/firmware");
+            if vendor.is_dir() {
+                remount_rw(vendor);
+                let _ = write_firmware(vendor, &file.name, &bytes);
+            }
+            Ok(())
+        }
         None => skyward_sys::kmsg(&format!("the phone has no {}, and the driver starts without it", file.path)),
     }
 }
 
+/// Let the recovery write to a read-only mount, if it can.
+fn remount_rw(target: &Path) {
+    let Ok(t) = std::ffi::CString::new(target.as_os_str().as_encoded_bytes()) else { return };
+    // SAFETY: a NUL-terminated mount point; MS_REMOUNT with no other flag
+    // keeps how it is mounted and only lifts the read-only bit.
+    unsafe {
+        libc::mount(
+            std::ptr::null(),
+            t.as_ptr(),
+            std::ptr::null(),
+            libc::MS_REMOUNT,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
+fn write_firmware(base: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    let to = base.join(name);
+    let dir = to.parent().expect("a firmware file is in a folder");
+    fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+    fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))
+}
+
 /// Start the supplicant on the interface, and wait for its control socket.
 fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
+    let home = Path::new(HOME);
+    let sockets = home.join("sockets");
+    fs::create_dir_all(&sockets).with_context(|| format!("make {}", sockets.display()))?;
+    fs::set_permissions(home, fs::Permissions::from_mode(0o755)).with_context(|| format!("open {} to the supplicant", home.display()))?;
+    std::os::unix::fs::chown(&sockets, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", sockets.display()))?;
+    fs::set_permissions(&sockets, fs::Permissions::from_mode(0o755)).with_context(|| format!("keep {} to the supplicant", sockets.display()))?;
+
     // Android 的 wpa_supplicant 启动时会自动加载 /vendor/etc/wifi/wpa_supplicant.conf
     // 作为 overlay conf，里面强制 pmf=1。绝大多数 WPA2-only 的 AP 不支持 PMF 协商，
     // wpa_supplicant 拿到 pmf=1 后 association 直接被 AP 拒掉（status 停在 0000），
     // 退不回纯 WPA2。Skyward 自己写的 conf 里的 pmf=0 会被 vendor 的 pmf=1 覆盖
     // ——wpa_supplicant 加载多个 conf 时后面的覆盖前面的。
     //
-    // 我们的办法：在启动 supplicant 前，把 vendor conf 复制到可写目录、改掉 pmf=1、
-    // 再 bind mount 回去。erofs 只读分区本身无法写，但 bind mount 在 recovery 里
-    // 完全可行（需要 root 权限）。
-    let home = Path::new(HOME);
+    // 办法：把 vendor conf 复制到可写目录、改掉 pmf=1、再 bind mount 回去。
+    // erofs 只读分区本身无法写，但 bind mount 在 recovery 里完全可行（需要 root）。
     let vendor_conf = Path::new("/vendor/etc/wifi/wpa_supplicant.conf");
-    if vendor_conf.exists() {
-        let ours = home.join("wpa_vendor_fix.conf");
-        let bytes = fs::read(vendor_conf)
-            .with_context(|| format!("read {}", vendor_conf.display()))?;
-        let mut fixed = String::from_utf8_lossy(&bytes).to_string();
-        if fixed.contains("pmf=1") {
-            fixed = fixed.replace("pmf=1", "pmf=0");
-            fs::write(&ours, &fixed)
-                .with_context(|| format!("write {}", ours.display()))?;
-            // 尝试 bind mount；失败也不要中止，recovery 里 mount 有时需要重试。
-            let _ = Process::new("mount")
-                .args(["--bind", ours.to_string_lossy().as_ref(), vendor_conf.to_string_lossy().as_ref()])
-                .status();
+    if vendor_conf.is_file()
+        && let Ok(bytes) = fs::read(vendor_conf)
+    {
+        let fixed = String::from_utf8_lossy(&bytes).replace("pmf=1", "pmf=0");
+        if fixed != String::from_utf8_lossy(&bytes) {
+            let ours = home.join("wpa_vendor_fix.conf");
+            fs::write(&ours, &fixed).with_context(|| format!("write {}", ours.display()))?;
+            if let Err(e) = bind_mount(&ours, vendor_conf) {
+                // 失败也不中止：supplicant 仍可启动，只是 pmf 可能被 vendor 覆盖。
+                let _ = skyward_sys::kmsg(&format!("could not cover {}: {e:#}", vendor_conf.display()));
+            }
         }
     }
 
-    let sockets = home.join("sockets");
-    fs::create_dir_all(&sockets).with_context(|| format!("make {}", sockets.display()))?;
-    fs::set_permissions(home, fs::Permissions::from_mode(0o755)).with_context(|| format!("open {} to the supplicant", home.display()))?;
-    std::os::unix::fs::chown(&sockets, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", sockets.display()))?;
-    fs::set_permissions(&sockets, fs::Permissions::from_mode(0o770)).with_context(|| format!("keep {} to the supplicant", sockets.display()))?;
     let settings = home.join("wpa_supplicant.conf");
-    // wpa_supplicant 在 Android 上会同时加载 /vendor/etc/wifi/wpa_supplicant.conf
-    // 作为 overlay，里面自带 pmf=1。我们必须显式写 pmf=0 才能覆盖它——否则 WPA2-only
-    // 的 AP 会在 PMF 协商失败后直接拒 association，status 永远停在 0000。
     fs::write(&settings, format!("ctrl_interface={}\nupdate_config=0\np2p_disabled=1\npmf=0\nsae_pwe=2\n", sockets.display()))
         .with_context(|| format!("write {}", settings.display()))?;
     fs::set_permissions(&settings, fs::Permissions::from_mode(0o644)).with_context(|| format!("open {} to the supplicant", settings.display()))?;
@@ -927,38 +786,20 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
     if let Some(dir) = libraries {
         path.push(dir.to_string_lossy().into_owned());
     }
-    // What the supplicant says of itself goes beside its socket: it writes
-    // nothing anywhere else, and why it would not start is what is wanted
-    // when it does not.
-    let said = home.join("stderr.log");
-    let log = fs::File::create(&said).with_context(|| format!("make {}", said.display()))?;
-    let spoke = home.join("stdout.log");
-    let out = fs::File::create(&spoke).with_context(|| format!("make {}", spoke.display()))?;
-    let libraries_path = path.join(":");
-    let shown = iface::exists(&cfg.interface);
-    let _ = skyward_sys::kmsg(&format!(
-        "starting {} on {}, which {} there, with LD_LIBRARY_PATH={libraries_path}",
-        cfg.supplicant,
-        cfg.interface,
-        if shown { "is" } else { "is not" },
-    ));
     let mut child = Process::new(&cfg.supplicant)
         .args(["-i", &cfg.interface, "-D", "nl80211", "-c"])
         .arg(&settings)
-        .env("LD_LIBRARY_PATH", &libraries_path)
+        .env("LD_LIBRARY_PATH", path.join(":"))
         .current_dir("/")
         .stdin(Stdio::null())
-        .stdout(Stdio::from(out))
-        .stderr(Stdio::from(log))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("start {}", cfg.supplicant))?;
     let until = Instant::now() + SOCKET_WAIT;
     while !socket.exists() {
         if let Some(status) = child.try_wait().context("look at wpa_supplicant")? {
-            let tail = fs::read_to_string(&said).unwrap_or_default();
-            let head = fs::read_to_string(&spoke).unwrap_or_default();
-            let tail = format!("{} {}", tail.trim(), head.trim());
-            bail!("wpa_supplicant ended as it started: {status}: {}", tail.trim());
+            bail!("wpa_supplicant ended as it started: {status}");
         }
         if Instant::now() >= until {
             end(&mut child, None);
@@ -967,6 +808,31 @@ fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
         thread::sleep(Duration::from_millis(100));
     }
     Ok(child)
+}
+
+/// Show `source` at `target`, leaving what is under `target` untouched.
+fn bind_mount(source: &Path, target: &Path) -> Result<()> {
+    let cstring = |p: &Path| {
+        std::ffi::CString::new(p.as_os_str().as_encoded_bytes())
+            .with_context(|| format!("{} holds a NUL", p.display()))
+    };
+    let (s, t) = (cstring(source)?, cstring(target)?);
+    // SAFETY: both are NUL-terminated paths; a bind mount takes no filesystem
+    // type, flags beyond MS_BIND, or data.
+    let rc = unsafe {
+        libc::mount(
+            s.as_ptr(),
+            t.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null_mut(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("bind mount {} over {}", source.display(), target.display()));
+    }
+    Ok(())
 }
 
 /// End the supplicant: asked to, where it can be, and killed after a while.

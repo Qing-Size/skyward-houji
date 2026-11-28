@@ -14,11 +14,9 @@ use std::time::{Duration, Instant};
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
 pub enum Task {
-    /// Copy or move these, one after another, into `into`.
-    Copy { from: Vec<PathBuf>, into: PathBuf, clash: Clash, ownership: Ownership },
-    Move { from: Vec<PathBuf>, into: PathBuf, clash: Clash, ownership: Ownership },
-    /// Delete these, one after another.
-    Delete { paths: Vec<PathBuf> },
+    Copy { from: PathBuf, into: PathBuf, clash: Clash, ownership: Ownership },
+    Move { from: PathBuf, into: PathBuf, clash: Clash, ownership: Ownership },
+    Delete { path: PathBuf },
     /// Give the data partition's files the labels the rules in `rules`
     /// give them.
     Relabel { rules: Vec<PathBuf> },
@@ -61,9 +59,11 @@ impl Worker {
             };
             let mut progress = |p: Progress| report(Event::Progress(p));
             let ended = match task {
-                Task::Copy { from, into, clash, ownership } => skyward_files::copy(&from, &into, clash, ownership, &stop, &mut progress),
-                Task::Move { from, into, clash, ownership } => skyward_files::move_into(&from, &into, clash, ownership, &stop, &mut progress),
-                Task::Delete { paths } => skyward_files::delete(&paths, &stop, &mut progress),
+                Task::Copy { from, into, clash, ownership } => skyward_files::copy(&[from], &into, clash, ownership, &stop, &mut progress),
+                Task::Move { from, into, clash, ownership } => {
+                    skyward_files::move_into(&[from], &into, clash, ownership, &stop, &mut progress)
+                }
+                Task::Delete { path } => skyward_files::delete(&[path], &stop, &mut progress),
                 Task::Relabel { rules } => relabel::run(&rules, &stop, &mut |r| report(Event::Relabeling(r))),
             };
             // Work that stops or fails shows how far it came in the end.

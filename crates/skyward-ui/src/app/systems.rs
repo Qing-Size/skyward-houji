@@ -42,25 +42,6 @@ impl App {
         self.refresh();
     }
 
-    /// 系统应用的停用状态，按包名读到的那些；读不到就是空表。
-    pub fn set_app_disabled(&mut self, states: std::collections::BTreeMap<String, bool>) {
-        self.state.app_disabled = Some(states);
-        self.refresh();
-    }
-
-    /// 停用/启用的请求排上了队：页面上的那一行跟着翻面，等系统启动后执行。
-    pub fn app_state_queued(&mut self, package: &str, disable: bool, now: u64) {
-        self.state.app_state_queued.insert(package.to_string(), disable);
-        let said = if disable {
-            self.state.lang.pick(["下次启动系统时停用", "下次啟動系統時停用", "Disabled when the system next starts"])
-        } else {
-            self.state.lang.pick(["下次启动系统时启用", "下次啟動系統時啟用", "Enabled when the system next starts"])
-        };
-        let said = format!("{package}：{said}");
-        self.say(&said, now);
-        self.refresh();
-    }
-
     /// How switching the slot to start next went: what the boot control
     /// holds of the slots now, or why it did not switch.
     pub fn slot_switched(&mut self, outcome: Result<BootSlots, String>, now: u64) {
@@ -126,11 +107,7 @@ mod tests {
     #[test]
     fn an_update_waiting_in_the_slot_merges_with_a_swipe_and_shows_how_far_it_has_come() {
         let (f, i) = (fonts(), info());
-        // 系统更新那条默认搬到了首页「其他」（2026-11-27）。
-        let mut app = App::new(Screen::Home, W, H, PPD);
-        app.state.home_sections.iter_mut().for_each(|section| section.collapsed = false);
-        app.state.home_rest_collapsed = false;
-        app.refresh();
+        let mut app = App::new(Screen::Advanced, W, H, PPD);
         app.set_update(Standing::Waiting);
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "the page reads where the update stands");
         assert_eq!(app.screen(), Screen::Update);
@@ -142,7 +119,7 @@ mod tests {
         app.set_update(Standing::Merged);
         assert!(app.frame(&f, &i).hits.is_empty(), "merged, nothing is left to do here");
         app.key(Key::Back, 0);
-        assert_eq!(app.screen(), Screen::Home, "回到它被点开的那一页");
+        assert_eq!(app.screen(), Screen::Advanced);
         app.set_update(Standing::Installed(Slot::A));
         tap(&mut app, &f, &i, Action::Open(Screen::Update));
         assert!(app.frame(&f, &i).hits.is_empty(), "an update in the other slot merges once that slot has started");
@@ -333,7 +310,7 @@ mod tests {
         let y = track.centre().1 - app.top().1;
         app.touch(Touch::Down(track.x + track.h / 2.0, y), &f, 1000);
         app.touch(Touch::Move(track.x + track.w, y), &f, 1000);
-        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::Haptic, Effect::InstallSystem { size: 8 << 30 }]);
+        assert_eq!(app.touch(Touch::Up, &f, 1000), vec![Effect::InstallSystem { size: 8 << 30 }]);
         assert_eq!(app.state.install, Install::Systeming { name: "Ubuntu Touch".into(), stage: None });
         app.install(Event::Progress(Stage::Root { done: 1 << 30, total: 6 << 30 }), 1000);
         assert_eq!(app.state.install, Install::Systeming { name: "Ubuntu Touch".into(), stage: Some(Stage::Root { done: 1 << 30, total: 6 << 30 }) });

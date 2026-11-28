@@ -34,10 +34,6 @@ pub struct Haptics {
     click: Click,
     ticks: Click,
     strength: Strength,
-    /// The motor has refused a click: it takes none of the events a click is
-    /// made of, and asking again only fills the log (2026-11-17, this phone's
-    /// qcom-hv-haptics takes neither FF_PERIODIC nor FF_CUSTOM).
-    broken: bool,
     /// Whether the driver is given the strength in the samples it plays.
     scale_samples: bool,
     /// The click playing, by its slot and its count, until it is taken
@@ -74,26 +70,13 @@ impl Haptics {
             }
         };
         let ticks = Click::Samples { data: ticks(hz), rate: TICKS_RATE };
-        Ok(Haptics {
-            dev,
-            click,
-            ticks,
-            strength: cfg.strength,
-            broken: false,
-            scale_samples: cfg.scale_samples,
-            playing: Arc::new(Mutex::new(None)),
-            clicks: 0,
-        })
+        Ok(Haptics { dev, click, ticks, strength: cfg.strength, scale_samples: cfg.scale_samples, playing: Arc::new(Mutex::new(None)), clicks: 0 })
     }
 
     /// One short click at the strength the slider's `position` gives, after
     /// taking away one still playing. Gives how long it plays.
     pub fn click(&mut self, position: f32) -> Result<Duration> {
-        if self.broken {
-            return Ok(Duration::ZERO);
-        }
-        let share = share(&self.strength, position);
-        self.start(false, share).inspect_err(|_| self.broken = true)
+        self.start(false, share(&self.strength, position))
     }
 
     /// The ticks of the screen going off, as strong as the phone's own

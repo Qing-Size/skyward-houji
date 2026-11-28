@@ -2,9 +2,7 @@
 //! composed from it, with the bar, the titles and what slides or fades
 //! over the page.
 
-use crate::tr;
 use super::*;
-use crate::icons::{self, Icon};
 
 impl App {
     /// What the status bar shows, its clock reading `clock`: the battery,
@@ -174,600 +172,7 @@ impl App {
         if charge > 0.0 {
             self.compose_charging(out, f, info, charge, now);
         }
-        if self.shade > 0.0 {
-            self.paint_shade(out, f, info, clock);
-        }
-        // The card asking to delete sits over the page, fixed where the eye
-        // already is: drawn with the page it would scroll with it.
-        // Only the pages whose asking the card carries: an entry's, a backup's,
-        // and several at once. The systems page asks with its own swipe.
-        let card_page = matches!(self.screen(), Screen::FileInfo | Screen::RestoreBackup);
-        let many = self.state.asking_many.is_some() && self.screen() == Screen::Files;
-        if (self.state.asking_delete && card_page) || many {
-            self.compose_asking(out, f);
-        }
-        // 应用与模块的卸载：同一张滑动卡。
-        if self.state.app_confirm.is_some() || self.state.module_confirm.is_some() {
-            self.compose_uninstall(out, f);
-        }
-        // Keeping the screen lock is a risk taken on: the card saying so sits
-        // over the settings page until it is taken across or put away.
-        if self.state.asking_remember && matches!(self.screen(), Screen::Settings | Screen::Decrypt) {
-            self.compose_remember_risk(out, f);
-        }
-        // 复制或移动问到哪儿去：两个格子浮在页面中央，点别处就收起来。
-        if self.state.place_ask.is_some() {
-            self.compose_place(out, f);
-        }
-        if let Some(lock) = &self.lock {
-            let drag = lock.drag;
-            self.compose_lock(out, f, info, clock, drag);
-        }
-        // 录屏的计时画在最上面：控制中心、锁屏、问话的卡片之上都看得见。
-        // 停了就把它记下的矩形清掉 —— 否则那一块地方还会被当成胶囊吃掉手指。
-        if self.state.record.on {
-            self.compose_record_pill(out, f);
-        } else {
-            self.record_pill = None;
-        }
         out.dim(self.curtain.level(now));
-    }
-
-    pub(super) fn compose_record_pill(&mut self, out: &mut Canvas, f: &Fonts) {
-        let t = self.theme();
-        let m = &t.m;
-        let l = self.state.lang;
-        let paused = self.state.record.paused;
-        let busy = if self.state.record.elapsed.is_empty() { "0:00" } else { self.state.record.elapsed.as_str() };
-        let px = m.dp(13.5);
-        let dot = m.dp(6.5);
-        let pad = m.dp(11.0);
-        let gap = m.dp(8.0);
-        let h = m.dp(27.0);
-        let label = if paused { Some(l.pick(["已暂停", "已暫停", "Paused"])) } else { None };
-        let label_px = m.dp(11.5);
-        let wide = out.text_width(&f.strong, busy, px)
-            + label.map_or(0.0, |said| gap * 0.6 + out.text_width(&f.value, said, label_px));
-        // 右边那一下：一条细竖线，加一枚白色方块（相机上停录的那个方框）。
-        let btn = dot * 2.0;
-        let sep = gap * 0.9;
-        let w = pad * 2.0 + dot * 2.0 + gap + wide + sep * 2.0 + btn;
-        // 默认贴着右上角；拖过就按拖到的地方放，拖出屏幕的边就推回来。
-        //
-        // 控制中心拉下来时，右上角那枚「编辑磁贴」的圆钮不能被盖住，可计时
-        // 也不想缩成一个点。折中：整条胶囊挪到时间与日期那一行的上方——那
-        // 一带空着，谁也不碍（2026-11-22）。
-        //
-        // 左边缘跟时间对齐，不贴右边：贴右上角那块地方单手够不着，暂停和
-        // 结束都难点（2026-11-22）。
-        let (x, y) = if self.shade > 0.0 {
-            // 摆在「日期」上方：日期字矮（13dp），它上面那一截比时间上面空
-            // 得多，正好放得下这条胶囊，又不压时间也不压日期。
-            //
-            // 左边缘从时间右边起：时间那块是 44dp 的大字，胶囊压在它上面会
-            // 显得挤；从时间右边开始，正好落在日期那一段的上方（2026-11-22）。
-            // 摆在日期正上方：左边缘跟日期对齐，底边压在日期墨迹顶上，中间
-            // 留 8dp。没有日期时退回「时间右边 + 时间墨迹上方」那一带。
-            // 面板拉到底时 `shade_top()` 是 0，所以不能拿它算——那样胶囊会
-            // 贴到屏幕最顶端去（2026-11-22）。
-            let top = self.shade_top();
-            let clock_x = m.margin + m.dp(15.0);
-            let clock_px = m.dp(44.0);
-            let clock_y = top + m.dp(88.0);
-            let (tt, _) = f.heading.ink(clock_px);
-            let clock_wide = out.text_width(&f.heading, "00:00", clock_px);
-            let fallback = (clock_x + clock_wide + m.dp(12.0), clock_y + tt);
-            let (left, date_top) = self.shade_date.unwrap_or(fallback);
-            let left = left.min(m.w as f32 - m.margin - w).max(m.margin);
-            // 底边在日期墨迹顶上方 8dp，但不许高过面板顶端。
-            let y = (date_top - h - m.dp(8.0)).max(top + m.dp(4.0));
-            (left, y)
-        } else {
-            match self.state.record.pill {
-                Some((x, y)) => ((x.min(m.w as f32 - w)).max(0.0), (y.min(m.h as f32 - h)).max(0.0)),
-                None => (m.w as f32 - m.margin - w, m.dp(46.0)),
-            }
-        };
-        let ink = Rgba::rgb(255, 255, 255);
-        out.shadow_round_rect(x, y, w, h, h / 2.0, m.dp(7.0), Rgba::rgb(0, 0, 0).with_alpha(72));
-        out.fill_round_rect(x, y, w, h, h / 2.0, Rgba::rgb(16, 16, 18).with_alpha(if paused { 196 } else { 226 }));
-        let cx = x + pad + dot;
-        let cy = y + h / 2.0;
-        if paused {
-            // 播放三角：暂停时红点收起来，看到的是「按一下接着录」。
-            out.fill_convex(&[(cx - dot * 0.66, cy - dot), (cx + dot * 0.9, cy), (cx - dot * 0.66, cy + dot)], ink);
-        } else {
-            out.fill_circle(cx, cy, dot, Rgba::rgb(240, 64, 64));
-        }
-        let mut left = x + pad + dot * 2.0 + gap;
-        out.text_vc(&f.strong, busy, left, cy, px, if paused { ink.with_alpha(190) } else { ink }, None);
-        left += out.text_width(&f.strong, busy, px);
-        if let Some(said) = label {
-            left += gap * 0.6;
-            out.text_vc(&f.value, said, left, cy, label_px, ink.with_alpha(150), None);
-        }
-        // 结束那一下：竖线把时间与按钮分开，方块画在它右边半个按钮的位置。
-        let cut = x + w - pad - btn - sep * 2.0;
-        out.fill_round_rect(cut, cy - m.dp(7.0), m.dp(0.7), m.dp(14.0), m.dp(0.35), ink.with_alpha(56));
-        let side = dot * 1.45;
-        out.fill_round_rect(cut + sep * 2.0 + (btn - side) / 2.0, cy - side / 2.0, side, side, m.dp(2.0), ink.with_alpha(232));
-        self.record_pill = Some(Pill {
-            body: crate::geom::Rect::new(x, y, w, h),
-            dot: crate::geom::Rect::new(x, y, pad + dot * 2.0 + gap * 0.5, h),
-            stop: crate::geom::Rect::new(cut, y, x + w - cut, h),
-        });
-    }
-
-    /// The card that asks before an entry, or a backup, is deleted: the words,
-    /// and the swipe that does it, over the middle of the screen.
-    /// The card that says what keeping the screen lock puts at risk, over the
-    /// page the switch is on.
-    pub(super) fn compose_remember_risk(&mut self, out: &mut Canvas, f: &Fonts) {
-        let t = self.theme();
-        let l = self.state.lang;
-        let what = l.pick([
-            "开启后，锁屏密码会保存在本机，每次开机自动解密 data 分区。任何拿到这台手机的人都能借此读取其中全部文件，丢失、被盗或送修时尤其危险。开启即表示你接受这一风险。",
-            "開啟後，螢幕鎖定密碼會保存在本機，每次開機自動解密 data 分割區。任何拿到這台手機的人都能藉此讀取其中全部檔案，遺失、被盜或送修時尤其危險。開啟即表示你接受這項風險。",
-            "Kept, the screen lock is saved on this phone and opens the data partition by itself every start. Anyone who gets hold of the phone can read every file on it with it — worst of all if it is lost, stolen or sent for repair. Turning it on means you accept that.",
-        ]);
-        let (label, danger) = crate::pages::confirm_label(Confirm::KeepLock, &self.state);
-        let (card, track) = widgets::confirm_card(out, &t, f, what, label, danger, self.state.confirm);
-        self.asking = Some((card, Confirm::KeepLock));
-        self.asking_track = Some(track);
-    }
-
-    /// The question a copy or a move asks first: the phone's own storage, or
-    /// the drive. Two pills in a card over the page.
-    pub(super) fn compose_place(&mut self, out: &mut Canvas, f: &Fonts) {
-        let t = self.theme().clone();
-        let m = &t.m;
-        let l = self.state.lang;
-        let (w, h) = (m.w as f32, m.h as f32);
-        out.fill_rect(0.0, 0.0, w, h, Rgba::rgb(0, 0, 0).with_alpha(96));
-        let op = self.state.place_ask.expect("asked only when asked");
-        let what = match op {
-            crate::app::FileOp::Move => l.pick(["移动到哪里？", "移動到哪裡？", "Where does it move to?"]),
-            _ => l.pick(["复制到哪里？", "複製到哪裡？", "Where does it copy to?"]),
-        };
-        let (card_w, card_h) = (w - m.margin * 2.0, m.dp(126.0));
-        let (cx, cy) = (m.margin, (h - card_h) / 2.0);
-        out.fill_round_rect(cx, cy, card_w, card_h, m.card_radius, t.pal.card);
-        out.text_center(&f.heading, what, w / 2.0, cy + m.dp(32.0), m.row_title_px, t.pal.text);
-        let ph = m.dp(crate::widgets::PILL_DP);
-        let gap = m.dp(12.0);
-        let cell = (card_w - m.inner * 2.0 - gap) / 2.0;
-        let y = cy + m.dp(52.0);
-        let mut hits: Vec<(crate::geom::Rect, crate::app::Action)> = Vec::new();
-        for (k, (label, action)) in [
-            (l.pick(["内部存储", "內部儲存空間", "The phone"]), crate::app::Action::ToPhone(op)),
-            (l.pick(["U 盘", "USB 隨身碟", "The drive"]), crate::app::Action::ToDrive(op)),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let x = cx + m.inner + k as f32 * (cell + gap);
-            let fill = if k == 0 { t.pal.search } else { t.pal.search };
-            crate::widgets::pill_sized(out, f, x, y, ph, m.row_title_px, m.inner, label, fill, t.pal.text);
-            hits.push((crate::geom::Rect::new(x, y, cell, ph), action));
-        }
-        let note = l.pick(["点别处取消", "點別處取消", "Tap elsewhere to cancel"]);
-        out.text_center(&f.body, note, w / 2.0, y + ph + m.dp(24.0), m.sub_px, t.pal.subtitle);
-        self.place_hits = hits;
-    }
-
-    /// 应用管理与模块管理的卸载也走同一张滑动卡：卡片上写清楚删的是谁。
-    pub(super) fn compose_uninstall(&mut self, out: &mut Canvas, f: &Fonts) {
-        let t = self.theme().clone();
-        let l = self.state.lang;
-        let (what, which) = if let Some(k) = self.state.app_confirm {
-            let name = match &self.state.apps {
-                Some(Ok(list)) => list.get(k).map(|a| a.label.clone()).unwrap_or_default(),
-                _ => String::new(),
-            };
-            (tr!(l, "卸载\"{name}\"及其数据？卸载后无法恢复。", "卸載「{name}」及其資料？卸載後無法復原。", "Uninstall “{name}” and its data? It can't be brought back."), Confirm::DeleteApp)
-        } else if let Some(k) = self.state.module_confirm {
-            let name = match &self.state.modules {
-                Some(Ok(list)) => list.get(k).map(|m| m.name.clone()).unwrap_or_default(),
-                _ => String::new(),
-            };
-            (tr!(l, "卸载模块\"{name}\"？下次启动时移除。", "卸載模組「{name}」？下次啟動時移除。", "Uninstall the module “{name}”? It goes at the next start."), Confirm::DeleteModule)
-        } else {
-            return;
-        };
-        let (label, danger) = crate::pages::confirm_label(which, &self.state);
-        let (card, track) = widgets::confirm_card(out, &t, f, &what, label, danger, self.state.confirm);
-        self.asking = Some((card, which));
-        self.asking_track = Some(track);
-    }
-
-    pub(super) fn compose_asking(&mut self, out: &mut Canvas, f: &Fonts) {
-        // The pages whose asking it carries, and no other: the systems page
-        // asks with its own swipe on its own page.
-        let many = self.state.asking_many.is_some() && self.screen() == Screen::Files;
-        let one = self.state.asking_delete && matches!(self.screen(), Screen::FileInfo | Screen::RestoreBackup);
-        if !many && !one {
-            return;
-        }
-        let t = self.theme();
-        let l = self.state.lang;
-        // Several entries at once are named by how many there are; one by its
-        // own name.
-        if let Some(paths) = self.state.asking_many.clone() {
-            let n = paths.len();
-            let what = tr!(
-                l,
-                "删除选中的 {n} 项？删除后无法恢复。",
-                "刪除選取的 {n} 項？刪除後無法復原。",
-                "Delete the {n} entries chosen? They can't be brought back."
-            );
-            let (label, danger) = crate::pages::confirm_label(Confirm::DeleteEntry, &self.state);
-            let (card, track) = widgets::confirm_card(out, &t, f, &what, label, danger, self.state.confirm);
-            self.asking = Some((card, Confirm::DeleteEntry));
-            self.asking_track = Some(track);
-            return;
-        }
-        let (name, folder) = match self.screen() {
-            Screen::RestoreBackup => {
-                let entry = self.state.restore.as_ref().map(|(e, _)| e.name.clone()).unwrap_or_default();
-                (entry, false)
-            }
-            _ => {
-                let e = self.state.file.as_ref().expect("the file page shows an entry");
-                (e.name.clone(), matches!(e.kind, FileKind::Folder { .. } | FileKind::Link { folder: true, .. }))
-            }
-        };
-        let what = match (self.screen(), folder) {
-            (Screen::RestoreBackup, _) => tr!(l, "删除备份\"{name}\"？删除后无法恢复。", "刪除備份「{name}」？刪除後無法復原。", "Delete the backup “{name}”? It can't be brought back."),
-            (_, true) => tr!(
-                l,
-                "删除\"{name}\"及其中的全部内容？删除后无法恢复。",
-                "刪除「{name}」及其中的全部內容？刪除後無法復原。",
-                "Delete “{name}” and everything in it? It can't be brought back."
-            ),
-            _ => tr!(l, "删除\"{name}\"？删除后无法恢复。", "刪除「{name}」？刪除後無法復原。", "Delete “{name}”? It can't be brought back."),
-        };
-        let confirm = if self.screen() == Screen::RestoreBackup { Confirm::DeleteBackup } else { Confirm::DeleteEntry };
-        let (label, danger) = crate::pages::confirm_label(confirm, &self.state);
-        let (card, track) = widgets::confirm_card(out, &t, f, &what, label, danger, self.state.confirm);
-        self.asking = Some((card, confirm));
-        self.asking_track = Some(track);
-    }
-
-    /// The control centre, pulled down from the top edge: the time and the
-    /// battery, the toggles a recovery has a use for, and the two sliders.
-    fn paint_shade(&mut self, out: &mut Canvas, f: &Fonts, info: &DeviceInfo, clock: &str) {
-        self.shade_hits.clear();
-        if self.shade <= 0.0 {
-            return;
-        }
-        let t = self.theme();
-        let m = t.m;
-        let w = m.w as f32;
-        let l = self.state.lang;
-        let white = Rgba::rgb(255, 255, 255);
-        let tall = shade_height(&t, self.state.tiles.len(), self.shade_editing);
-        let sheet = tall * self.shade;
-        let top = sheet - tall;
-        let pane = Rgba::rgb(20, 20, 26).with_alpha(238);
-        // The sheet itself, its foot rounded off.
-        out.fill_rect(0.0, 0.0, w, sheet - m.dp(30.0), pane);
-        out.fill_circle(m.dp(30.0), sheet - m.dp(30.0), m.dp(30.0), pane);
-        out.fill_circle(w - m.dp(30.0), sheet - m.dp(30.0), m.dp(30.0), pane);
-        out.fill_rect(m.dp(30.0), sheet - m.dp(30.0), w - m.dp(60.0), m.dp(30.0), pane);
-        // A grabber at the foot of the sheet.
-        out.fill_round_rect(w / 2.0 - m.dp(18.0), sheet - m.dp(13.0), m.dp(36.0), m.dp(5.0), m.dp(2.5), white.with_alpha(80));
-        // The time and what is left in the battery, set a little further down
-        // the sheet: they crowded the top edge, where the pull starts.
-        let inset = m.dp(15.0);
-        // 时间与日期同一行：时间大、日期小，日期跟在时间右边固定间隔处，
-        // 时间数字宽窄一变，日期跟着走（2026-11-19）。
-        let clock_px = m.dp(44.0);
-        let clock_y = top + m.dp(88.0);
-        let clock_x = m.margin + inset;
-        out.text(&f.heading, clock, clock_x, clock_y, clock_px, white, None);
-        self.shade_date = None;
-        if !self.state.date.is_empty() {
-            let wide = out.text_width(&f.heading, clock, clock_px);
-            let date_x = clock_x + wide + m.dp(12.0);
-            let date_y = clock_y - m.dp(2.0);
-            out.text(&f.body, &self.state.date, date_x, date_y, m.dp(13.0), white.with_alpha(170), None);
-            // 记下日期从哪儿起、墨迹顶到哪儿：录屏胶囊要摆在它正上方，
-            // 左边缘跟它对上，底边压在它的墨迹顶上（2026-11-22）。
-            let (dt, _) = f.body.ink(m.dp(13.0));
-            self.shade_date = Some((date_x, date_y + dt));
-        }
-        // The toggles, as round-cornered panes over the sheet. Which ones stand
-        // here and in what order is the user's to say (2026-11-22): the sheet
-        // draws whatever `state.tiles` holds, four across. Held long enough,
-        // a tile lifts and the sheet turns into an editor (2026-11-22).
-        let editing = self.shade_editing;
-        let grid = TileGrid::of(&t, top);
-        let gap = m.dp(14.0);
-        let (cell, dia, tiles_top, tile_h) = (grid.cell, grid.dia, grid.top, grid.row_h);
-        let rows = self.state.tiles.len().div_ceil(4);
-        let mut hits = Vec::new();
-        for (i, &tile) in self.state.tiles.iter().enumerate() {
-            // 拖着的那一枚从原位拿开：原位留个虚线圈，让人看得出它要落回去。
-            let lifted = self.shade_drag.is_some_and(|d| d.tile == tile);
-            let (cx, cy) = grid.centre(i);
-            let label = match tile {
-                Tile::Wlan => {
-                    if tile.lit(&self.state) {
-                        l.pick(["WLAN · 已开", "WLAN · 已開", "WLAN · on"])
-                    } else {
-                        l.pick(["WLAN · 已关", "WLAN · 已關", "WLAN · off"])
-                    }
-                }
-                other => other.label(l),
-            };
-            if lifted {
-                out.stroke_circle(cx, cy, dia / 2.0, m.dp(1.6), white.with_alpha(90));
-                continue;
-            }
-            let fill = if tile.lit(&self.state) { t.pal.accent } else { Rgba::rgb(53, 53, 55) };
-            out.fill_circle(cx, cy, dia / 2.0, fill);
-            Self::shade_glyph(out, &t, ShadeHit::Tile(tile), cx, cy, dia * 0.46, white);
-            out.text_center(&f.body, label, cx, cy + dia / 2.0 + m.dp(14.0), m.dp(10.0), white.with_alpha(226));
-            if !editing {
-                hits.push((grid.rect(i), ShadeHit::Tile(tile)));
-                continue;
-            }
-            // 编辑时右上角一枚小叉：点它把这枚拿下来。圆钮本身接住拖拽。
-            let badge = m.dp(19.0);
-            let (bx, by) = (cx + dia / 2.0 - badge * 0.34, cy - dia / 2.0 + badge * 0.34);
-            out.fill_circle(bx, by, badge / 2.0, Rgba::rgb(24, 24, 28));
-            out.stroke_circle(bx, by, badge / 2.0, m.dp(1.3), white.with_alpha(120));
-            let arm = badge * 0.24;
-            out.line(bx - arm, by - arm, bx + arm, by + arm, m.dp(1.7), white.with_alpha(220));
-            out.line(bx + arm, by - arm, bx - arm, by + arm, m.dp(1.7), white.with_alpha(220));
-            let cross = Rect::new(bx - badge / 2.0, by - badge / 2.0, badge, badge);
-            hits.push((cross, ShadeHit::TileRemove(tile)));
-            // 圆钮接拖拽，但比整格小一圈：这样小叉那一下不会先被圆钮吃掉。
-            hits.push((Rect::new(cx - dia / 2.0, cy - dia / 2.0, dia, dia), ShadeHit::Tile(tile)));
-        }
-        // 时间与日期那一行的最右端，一个圆钮：平常画一支笔，点一下进编辑；
-        // 编辑时同一个位置换成勾，点一下收工。磁贴不再靠长按进编辑，就这一处
-        // 入口，看得见也点得着（2026-11-22）。
-        //
-        // 圆心对齐最后一列磁贴圆钮的中心：一格比圆钮宽、圆钮在格里居中，
-        // 按格边对齐会多出去小半个格，看着就偏右（2026-11-22 修）。
-        {
-            let d = m.dp(34.0);
-            let (last_cx, _) = grid.centre(3);
-            // 圆心跟时间数字墨迹的竖直中心在同一条水平线上：`out.text` 的 y
-            // 是基线，`ink` 给的是墨迹在基线上下各到哪儿（2026-11-22）。
-            let (tt, tb) = f.heading.ink(clock_px);
-            let (cx, cy) = (last_cx, clock_y + (tt + tb) / 2.0);
-            out.fill_circle(cx, cy, d / 2.0, t.pal.accent.with_alpha(215));
-            let stroke = m.dp(2.2);
-            if editing {
-                // 一个勾：两笔，短的往下、长的往右上。
-                let s = d * 0.42;
-                out.line(cx - s * 0.52, cy + s * 0.04, cx - s * 0.08, cy + s * 0.46, stroke, white);
-                out.line(cx - s * 0.08, cy + s * 0.46, cx + s * 0.56, cy - s * 0.40, stroke, white);
-            } else {
-                icons::glyph(out, Icon::Pencil, cx, cy, d * 0.56, white);
-            }
-            // 手指要够得着：画的是 34dp 的圆，接手指的那块放宽到 46dp。
-            let reach = d + m.dp(12.0);
-            let which = if editing { ShadeHit::TilesDone } else { ShadeHit::TilesEdit };
-            hits.push((Rect::new(cx - reach / 2.0, cy - reach / 2.0, reach, reach), which));
-        }
-        // 一枚都没摆时，那一段空着：写一句话，免得看着像没画出来。
-        if self.state.tiles.is_empty() {
-            let said = if editing {
-                l.pick(["从下面挑几枚摆上来", "從下面挑幾枚擺上來", "Pick a few from below"])
-            } else {
-                l.pick(["长按这里可以摆磁贴", "長按這裡可以擺磁貼", "Hold here to choose tiles"])
-            };
-            out.text(&f.body, said, m.margin, tiles_top + m.dp(20.0), m.dp(12.0), white.with_alpha(150), None);
-        }
-        // The backlight and the motor: two capsules side by side, each filled
-        // from its left end as far as its value goes, with the mark alone at
-        // its middle -- the name inside was never level with anything. A finger
-        // anywhere on one slides it.
-        let cap_h = m.dp(46.0);
-        let cap_w = (w - m.margin * 2.0 - gap) / 2.0;
-        let row = tiles_top + rows as f32 * tile_h + m.dp(18.0);
-        for (col, (which, hit)) in [
-            (Slider::Brightness, ShadeHit::Brightness),
-            (Slider::Vibration, ShadeHit::Vibration),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let value = match which {
-                Slider::Brightness => self.state.brightness,
-                // The sheet's two are the only ones it holds; the charge
-                // page's are drawn on the charge page.
-                _ => self.state.vibration,
-            }
-            .clamp(0.0, 1.0);
-            let cap = Rect::new(m.margin + col as f32 * (cap_w + gap), row, cap_w, cap_h);
-            out.fill_round_rect(cap.x, cap.y, cap.w, cap.h, cap.h / 2.0, white.with_alpha(26));
-            // The fill keeps the capsule's own ends: narrow, it is still a
-            // capsule, not a bar with one round corner.
-            let filled = (cap.w * value).max(cap.h);
-            out.fill_round_rect(cap.x, cap.y, filled, cap.h, cap.h / 2.0, t.pal.accent.with_alpha(210));
-            // The mark stands at the capsule's left end, level with its
-            // middle, as a control's own icon does; the rest of the capsule is
-            // the level it is set to.
-            Self::shade_glyph(out, &t, hit, cap.x + m.dp(26.0), cap.y + cap.h / 2.0, m.dp(23.0), white.with_alpha(235));
-            hits.push((cap, hit));
-        }
-        // The phone as it stands: the data partition's lock, the slot the
-        // system runs from, the battery's level and its temperature, one line
-        // read across, as the control centre of the phone's own settings puts
-        // it (2026-11-19).
-        let card = Rect::new(m.margin, row + cap_h + m.dp(16.0), w - m.margin * 2.0, m.dp(72.0));
-        out.fill_round_rect(card.x, card.y, card.w, card.h, m.dp(20.0), white.with_alpha(16));
-        let side = m.dp(42.0);
-        let badge = Rect::new(card.x + m.dp(15.0), card.y + (card.h - side) / 2.0, side, side);
-        out.fill_round_rect(badge.x, badge.y, side, side, m.dp(12.0), t.pal.accent);
-        icons::glyph(out, Icon::Phone, badge.x + side / 2.0, badge.y + side / 2.0, side * 0.52, white);
-        let mut said = fmt::data(l, &self.state.data).to_string();
-        if let Some(slot) = info.slot {
-            said.push_str(&format!("  {} {}", l.pick(["槽位", "槽位", "Slot"]), slot.letter()));
-        }
-        if let Some(b) = info.battery.as_ref() {
-            said.push_str(&format!("  {}%", b.level));
-            if let Some(v) = b.temp {
-                said.push_str(&format!("  {}", fmt::celsius(v)));
-            }
-        }
-        let tx = badge.x + side + m.dp(16.0);
-        out.text(&f.body, l.pick(["设备状态", "裝置狀態", "Device status"]), tx, card.y + m.dp(29.0), m.row_title_px, white, None);
-        out.text(&f.body, &said, tx, card.y + m.dp(53.0), m.sub_px, white.with_alpha(150), None);
-        // 编辑时设备状态卡让位：它底下接着列出还没摆的磁贴。
-        if editing {
-            let add_top = card.y + card.h + m.dp(4.0);
-            let left = self.state.tiles_left();
-            if left.is_empty() {
-                let said = l.pick(["磁贴都摆上了", "磁貼都擺上了", "Every tile is on the sheet"]);
-                out.text(&f.body, said, m.margin, add_top + m.dp(18.0), m.dp(12.5), white.with_alpha(150), None);
-            } else {
-                // 候选已经三十几枚，平铺着找要扫很久：按「开关与动作」和「页面」
-                // 分两段，一排七个、小一圈，两段加起来还是五排（2026-11-27）。
-                let small = m.dp(30.0);
-                let label_px = m.dp(8.5);
-                let cols = 7.0;
-                let slot_w = (w - m.margin * 2.0) / cols;
-                let pitch = small + m.dp(20.0);
-                let mut top = add_top;
-                let groups = [
-                    (l.pick(["开关与动作", "開關與動作", "Switches and actions"]), left.iter().copied().filter(|tile| tile.screen().is_none()).collect::<Vec<_>>()),
-                    (l.pick(["页面", "頁面", "Pages"]), left.iter().copied().filter(|tile| tile.screen().is_some()).collect::<Vec<_>>()),
-                ];
-                for (title, tiles) in groups {
-                    if tiles.is_empty() {
-                        continue;
-                    }
-                    out.text(&f.body, title, m.margin, top + m.dp(18.0), m.dp(11.5), white.with_alpha(150), None);
-                    for (k, tile) in tiles.iter().enumerate() {
-                        let (col, line) = (k % 7, k / 7);
-                        let cx = m.margin + slot_w * (col as f32 + 0.5);
-                        let cy = top + m.dp(46.0) + line as f32 * pitch + small / 2.0;
-                        out.stroke_circle(cx, cy, small / 2.0, m.dp(1.3), white.with_alpha(115));
-                        Self::shade_glyph(out, &t, ShadeHit::Tile(*tile), cx, cy, small * 0.46, white.with_alpha(200));
-                        let name = tile.label(l);
-                        // 名字太长就按格宽截：七列一格不到 200 像素。
-                        let room = slot_w - m.dp(4.0);
-                        let shown = if out.text_width(&f.body, name, label_px) <= room {
-                            name.to_string()
-                        } else {
-                            let mut cut = name.to_string();
-                            while !cut.is_empty() && out.text_width(&f.body, &cut, label_px) > room {
-                                cut.pop();
-                            }
-                            cut
-                        };
-                        out.text_center(&f.body, &shown, cx, cy + small / 2.0 + m.dp(9.0), label_px, white.with_alpha(180));
-                        let reach = Rect::new(cx - slot_w / 2.0, cy - small / 2.0 - m.dp(3.0), slot_w, pitch - m.dp(6.0));
-                        hits.push((reach, ShadeHit::TileAdd(*tile)));
-                    }
-                    let lines = tiles.len().div_ceil(7);
-                    top += m.dp(46.0) + lines as f32 * pitch - m.dp(6.0);
-                }
-            }
-        }
-        // 拖着的那一枚跟着手指走，画在所有东西上面。
-        if let Some(drag) = self.shade_drag {
-            let (cx, cy) = (drag.x, drag.y);
-            let fill = if drag.tile.lit(&self.state) { t.pal.accent } else { Rgba::rgb(53, 53, 55) };
-            out.fill_circle(cx, cy, dia * 0.58, Rgba::rgb(0, 0, 0).with_alpha(60));
-            out.fill_circle(cx, cy, dia / 2.0 * 1.08, fill);
-            Self::shade_glyph(out, &t, ShadeHit::Tile(drag.tile), cx, cy, dia * 0.46 * 1.08, white);
-        }
-        self.shade_hits = hits;
-    }
-
-    /// The mark a tile or a slider carries.
-    fn shade_glyph(out: &mut Canvas, t: &Theme, hit: ShadeHit, cx: f32, cy: f32, size: f32, ink: Rgba) {
-        let m = &t.m;
-        let stroke = (size * 0.075).max(m.dp(1.6));
-        match hit {
-            // 图标照 qingzhengdoufu 那一版取：震动用手机、MTP 用 USB、U 盘用
-            // 随身碟、文件用文件夹、模块用层叠、分区用挂载、终端与设置各自。
-            // 后加的那十二枚各有图标，都在 `Tile::icon` 里（2026-11-22）。
-            ShadeHit::Tile(tile) => icons::glyph(out, tile.icon(), cx, cy, size, ink),
-            ShadeHit::Brightness => {
-                // A sun: its disc and eight rays.
-                out.fill_circle(cx, cy, size * 0.19, ink);
-                for k in 0..8 {
-                    let a = k as f32 * std::f32::consts::TAU / 8.0;
-                    let (sin, cos) = a.sin_cos();
-                    let (r0, r1) = (size * 0.30, size * 0.45);
-                    out.line(cx + cos * r0, cy + sin * r0, cx + cos * r1, cy + sin * r1, stroke, ink);
-                }
-            }
-            // 这三样不在圆钮里画：小叉和候选磁贴由 paint_shade 自己画。
-            ShadeHit::TileRemove(_) | ShadeHit::TileAdd(_) | ShadeHit::TilesDone | ShadeHit::TilesEdit => {}
-            ShadeHit::Vibration => {
-                // Three bars, the middle one longer: a motor tapping.
-                for (i, tall) in [0.36f32, 0.68, 0.36].iter().enumerate() {
-                    let x = cx + (i as f32 - 1.0) * size * 0.24;
-                    out.fill_round_rect(x - size * 0.06, cy - size * tall / 2.0, size * 0.12, size * tall, size * 0.06, ink);
-                }
-            }
-        }
-    }
-
-    /// Where the lock's knob slides: the bar drawn along the foot of it.
-    pub(super) fn lock_track(&self) -> Rect {
-        // The rect the confirm control draws is the one a finger has to land
-        // on: its margins and height, not an inset of our own (2026-11-15, the
-        // knob answered nowhere while these differed).
-        // It is shorter than the page is wide, and centred: a control the whole
-        // width of the screen reads as a bar rather than something to slide.
-        let m = &self.theme().m;
-        let wide = (m.w as f32 - m.margin * 2.0).min(m.dp(260.0));
-        Rect::new((m.w as f32 - wide) / 2.0, m.h as f32 - m.dp(176.0), wide, m.dp(56.0))
-    }
-
-    /// The lock over the page: the phone's time, its battery, and the knob to
-    /// slide along.
-    fn compose_lock(&mut self, out: &mut Canvas, f: &Fonts, info: &DeviceInfo, clock: &str, drag: f32) {
-        let t = self.theme().clone();
-        let m = &t.m;
-        let (w, h) = (m.w as f32, m.h as f32);
-        out.fill_rect(0.0, 0.0, w, h, Rgba::rgb(6, 6, 8).with_alpha(226));
-        // The date under which the time stands, as a phone's lock screen shows.
-        if let Ok(face) = f.face(400.0)
-            && !self.state.date.is_empty()
-        {
-            let px = m.dp(20.0);
-            let width = out.text_width(&face, &self.state.date, px);
-            out.text(&face, &self.state.date, (w - width) / 2.0, h * 0.245, px, Rgba::rgb(158, 162, 172), None);
-        }
-        if let Ok(face) = f.face(600.0) {
-            let px = m.dp(64.0);
-            let baseline = h * 0.335;
-            let width = out.text_width(&face, clock, px);
-            out.text(&face, clock, (w - width) / 2.0, baseline, px, Rgba::rgb(236, 238, 242), None);
-        }
-        if let (Ok(face), Some(b)) = (f.face(400.0), info.battery.as_ref()) {
-            // The level is always said, and while a cable is in, what it is
-            // taking: 85% · 充电中 · 18W.
-            let percent = format!("{}%", b.level);
-            let note = match b.charging() {
-                true => match b.watts() {
-                    Some(watts) => format!("{percent} · {} · {watts:.0}W", crate::tr!(self.state.lang, "充电中", "充電中", "Charging")),
-                    None => format!("{percent} · {}", crate::tr!(self.state.lang, "充电中", "充電中", "Charging")),
-                },
-                false => match b.watts() {
-                    Some(watts) => format!("{percent} · {watts:.0}W"),
-                    None => percent,
-                },
-            };
-            let px = m.dp(18.0);
-            let width = out.text_width(&face, &note, px);
-            out.text(&face, &note, (w - width) / 2.0, h * 0.375, px, Rgba::rgb(150, 154, 164), None);
-        }
-        let track = self.lock_track();
-        let label = crate::tr!(self.state.lang, "滑动解锁", "滑動解鎖", "Slide to unlock");
-        // Drawn in the rect `lock_track` gives, which is also where the finger
-        // has to land: a control across the whole page is a bar, not a slide.
-        self.lock_rect = Some(widgets::confirm_in(out, &t, f, track, &label, false, drag));
     }
 
     /// The charging screen, `level` of the way over the page drawn on `out`.
@@ -822,14 +227,10 @@ impl App {
         if self.toast.as_ref().is_some_and(|m| now >= m.1) {
             self.toast = None;
         }
-        let title = self.frame.as_ref().expect("rendered above").title.clone();
-        let key = (title.clone(), self.state.dark);
+        let title = self.frame.as_ref().expect("rendered above").title;
+        let key = (title, self.state.dark);
         if self.titles.as_ref().is_none_or(|(k, _, _)| *k != key) {
-            self.titles = Some((
-                key,
-                Blurs::new(widgets::big_title(&t, f, &title)),
-                Blurs::new(widgets::small_title(&t, f, &title)),
-            ));
+            self.titles = Some((key, Blurs::new(widgets::big_title(&t, f, title)), Blurs::new(widgets::small_title(&t, f, title))));
         }
         if let Some(fold) = self.frame.as_ref().and_then(|fr| fr.fold) {
             let key = (fold.hint, self.state.dark);
@@ -941,7 +342,6 @@ impl App {
     /// as it last showed has them drawn already.
     pub(super) fn paint_page(&mut self, out: &mut Canvas, t: &Theme, fresh: Option<(&Fonts, &DeviceInfo)>, view: &View) {
         let m = t.m;
-        self.bar_chip_rects.clear();
         let screen = self.screen();
         let (scroll, offset, pressing) = (view.scroll, view.offset, view.pressing);
         // The light goes over its control, in the part of the screen the
@@ -1032,21 +432,11 @@ impl App {
             if frame.header {
                 let level = (1.0 - frame.title_lift(scroll) / m.dp(TITLE_FADE_DP)).clamp(0.0, 1.0);
                 draw_faded(out, big, 0.0, -frame.title_lift(offset), t.pal.text, level, (1.0 - level) * m.dp(TITLE_BLUR_DP));
-                if let Some((art, x, y)) = &frame.title_art {
-                    let lift = frame.title_lift(offset);
-                    out.lay(art, *x as i32, (*y - lift) as i32, level);
-                    for hit in &frame.bar_hits {
-                        self.bar_chip_rects.push((
-                            Rect { x: hit.rect.x + *x, y: hit.rect.y + *y - lift, ..hit.rect },
-                            hit.action,
-                        ));
-                    }
-                }
             }
         }
         // The search page's round button and the home page's search bar
         // darken at once under a finger.
-        if let Some(a) = pressing.filter(|a| matches!(a, Action::CloseSearch | Action::Open(Screen::About))) {
+        if let Some(a) = pressing.filter(|a| matches!(a, Action::CloseSearch | Action::Open(Screen::Search))) {
             let r = frame.hits.iter().find(|h| h.action == a).expect("a button held down is on its page").rect;
             match frame.shown(r, offset) {
                 Some(r) if a == Action::CloseSearch => widgets::cancel_held(out, t, r),
@@ -1088,21 +478,6 @@ impl App {
                 widgets::back_arrow(out, t, t.pal.text);
             }
         }
-        // 返回按钮右边那排胶囊：页面自己画好的一小块，贴上来就好。
-        if let Some(art) = &frame.bar_art {
-            let back = widgets::back_rect(t);
-            let (ax, ay) = (
-                (back.x + back.w + m.dp(10.0)) as i32,
-                (back.y + (back.h - art.h as f32) / 2.0) as i32,
-            );
-            out.lay(art, ax, ay, bar);
-            for hit in &frame.bar_hits {
-                self.bar_chip_rects.push((
-                    Rect { x: hit.rect.x + ax as f32, y: hit.rect.y + ay as f32, ..hit.rect },
-                    hit.action,
-                ));
-            }
-        }
         if let Some((glyph, action)) = frame.button {
             let (_, chip, x, y) = self.button_chip.as_ref().expect("a page's round button is drawn with its chip");
             out.lay(chip, *x, *y, bar);
@@ -1112,7 +487,7 @@ impl App {
                 widgets::button_glyph(out, t, glyph, t.pal.text);
             }
         }
-        if frame.back || frame.button.is_some() || frame.bar_art.is_some() {
+        if frame.back || frame.button.is_some() {
             shine(out, Group::Fixed);
         }
         let level = view.title;
@@ -1194,8 +569,7 @@ impl App {
             let below = m.content_top + m.search_h;
             out.put_rows(&frame.canvas, below.floor() as i32, frame.canvas.h as i32, (below - morph.scroll + rise).floor() as i32);
         }
-        let home = self.home_title();
-        let title = morph.title.get_or_insert_with(|| Blurs::new(widgets::big_title(&t, f, home)));
+        let title = morph.title.get_or_insert_with(|| Blurs::new(widgets::big_title(&t, f, pages::HOME_TITLE)));
         let level = (1.0 - q / MORPH_TITLE_GONE).clamp(0.0, 1.0);
         draw_faded(out, title, 0.0, rise - morph.scroll, t.pal.text, level, (1.0 - level) * m.dp(TITLE_BLUR_DP));
         if let Some((keys, top)) = &morph.keyboard {
@@ -1304,6 +678,7 @@ mod tests {
             Screen::Search,
             Screen::Backup,
             Screen::Restore,
+            Screen::Advanced,
             Screen::Files,
             Screen::Terminal,
             Screen::Language,
@@ -1369,7 +744,7 @@ mod tests {
         let t = app.theme();
         let whole = pages::render(Screen::Settings, &Ctx { t: &t, f: &f, info: &i, state: &app.state, term: None, band: None }).canvas;
         let page = &app.frame.as_ref().unwrap().canvas;
-        assert!(whole.h > H, "a page longer than the screen, drawn in {bands} more bands");
+        assert!(whole.h > H + H / 4, "a page well over a screen long, drawn in {bands} more bands");
         assert!(page.whole() && page.data == whole.data, "the page drawn a band at a time is the page drawn whole");
     }
 
@@ -1474,64 +849,48 @@ mod tests {
         assert!(app.deadline(3300).is_none_or(|d| d > 10_000), "nor a wake for it, only for the screen going off");
     }
 
-    
-    /// 每排磁贴都要在自己被画出来的那一行接得住手指：命中矩形曾经全落在
-    /// 第一行，下面两排点了没反应（2026-11-19）。
     #[test]
-    fn every_row_of_round_tiles_is_reachable_where_it_is_drawn() {
+    fn the_search_bar_moves_up_into_the_search_page_and_back_down() {
         let (f, i) = (fonts(), info());
+        let t = Theme::light(W, H, PPD);
+        let m = t.m;
         let mut app = App::new(Screen::Home, W, H, PPD);
-        app.shade = 1.0;
-        let mut c = Canvas::new(W, H);
-        app.compose(&mut c, &f, &i, "12:00", 0);
-        let tiles: Vec<_> = app
-            .shade_hits
-            .iter()
-            .filter(|(_, hit)| matches!(hit, ShadeHit::Tile(_)))
-            .collect();
-        assert_eq!(tiles.len(), DEFAULT.len(), "默认那十二枚都接手指");
-        let rows: std::collections::BTreeSet<i32> = tiles.iter().map(|(r, _)| r.y as i32).collect();
-        assert_eq!(rows.len(), 3, "三排各自一行，不挤在第一行：{rows:?}");
-    }
+        let mut screen = Canvas::new(W, H);
+        // The bar's top along a column through it, clear of the title and
+        // the placeholder: the first row in the field's grey.
+        let x = m.dp(300.0) as u32;
+        let top = |screen: &Canvas| {
+            (m.dp(40.0) as u32..H).find(|&y| screen.data[((y * W + x) * 4) as usize] == t.pal.search.r).map(|y| y as f32)
+        };
+        let grey = |screen: &Canvas, y: f32| screen.data[((y as u32 * W + W / 2) * 4) as usize];
+        let (home, field) = (m.content_top, widgets::search_layout(&t).0.y);
+        // The device card under the home page's bar.
+        let card = m.content_top + m.search_h + m.after_search + m.dp(20.0);
+        app.compose(&mut screen, &f, &i, "12:00", 0);
+        assert_eq!(grey(&screen, card), t.pal.card.r);
 
-    /// 摆法改了，控制中心就照着改：删掉的不再画、也不再接手指；只留一枚
-    /// 时就只有那一排一行（2026-11-22）。
-    #[test]
-    fn the_sheet_draws_the_tiles_the_user_kept_and_no_others() {
-        let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
-        app.state.tiles = vec![Tile::Record, Tile::Wlan];
-        app.shade = 1.0;
-        let mut c = Canvas::new(W, H);
-        app.compose(&mut c, &f, &i, "12:00", 0);
-        let tiles: Vec<ShadeHit> = app
-            .shade_hits
-            .iter()
-            .map(|(_, hit)| *hit)
-            .filter(|hit| matches!(hit, ShadeHit::Tile(_)))
-            .collect();
-        assert_eq!(tiles, vec![ShadeHit::Tile(Tile::Record), ShadeHit::Tile(Tile::Wlan)]);
-        let rows: std::collections::BTreeSet<i32> =
-            app.shade_hits.iter().map(|(r, _)| r.y as i32).collect();
-        assert!(rows.len() >= 1);
-    }
+        tap_at(&mut app, &f, &i, Action::Open(Screen::Search), 1000);
+        assert_eq!(app.screen(), Screen::Search);
+        assert_eq!(app.deadline(1000), Some(0), "it moves frame by frame");
+        app.compose(&mut screen, &f, &i, "12:00", 1067);
+        let along = crate::motion::settle(67, MORPH_PERIOD);
+        let expected = home + (field - home) * along;
+        let at = top(&screen).expect("the bar is on screen");
+        assert!((at - expected).abs() <= 2.0, "up {along} of the way after 67 ms: at {at}, not {expected}");
+        assert_eq!(grey(&screen, card), t.pal.bg.r, "the home page's cards go at once");
+        app.compose(&mut screen, &f, &i, "12:00", 2500);
+        assert!(app.morph.is_none(), "settled, the search page shows as itself");
+        assert_eq!(top(&screen), Some(field.ceil()));
 
-    /// 一枚都不摆时那段空着，但滑条和状态卡照旧在那儿：不能因为磁贴没了，
-    /// 整张面板就塌下去（2026-11-22）。
-    #[test]
-    fn a_sheet_with_no_tiles_still_has_its_sliders() {
-        let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
-        app.state.tiles.clear();
-        app.shade = 1.0;
-        let mut c = Canvas::new(W, H);
-        app.compose(&mut c, &f, &i, "12:00", 0);
-        let sliders: Vec<ShadeHit> = app
-            .shade_hits
-            .iter()
-            .map(|(_, hit)| *hit)
-            .filter(|hit| matches!(hit, ShadeHit::Brightness | ShadeHit::Vibration))
-            .collect();
-        assert_eq!(sliders, vec![ShadeHit::Brightness, ShadeHit::Vibration]);
+        tap_at(&mut app, &f, &i, Action::CloseSearch, 3000);
+        assert_eq!(app.screen(), Screen::Home);
+        app.compose(&mut screen, &f, &i, "12:00", 3067);
+        let expected = field + (home - field) * along;
+        let at = top(&screen).expect("the bar is on screen");
+        assert!((at - expected).abs() <= 2.0, "down {along} of the way after 67 ms: at {at}, not {expected}");
+        assert_eq!(grey(&screen, card + (at - home)), t.pal.card.r, "the cards come down under the bar");
+        app.compose(&mut screen, &f, &i, "12:00", 4500);
+        assert!(app.morph.is_none());
+        assert_eq!(top(&screen), Some(home.ceil()));
     }
 }

@@ -21,3 +21,10 @@ keywords = ["qr-code", "barcode", "encoder", "image"]
 categories = ["encoding", "multimedia::images"]
 license = "MIT"
 repository = "https://github.com/nayuki/QR-Code-generator"
+
+[lib]
+# The crate-root doc examples are illustrative pseudocode (imports elided,
+# `...` placeholders) from the upstream nayuki library; they are not meant
+# to compile as standalone doctests. Pudding vendors this crate but its CI
+# only runs `cargo build`, so the broken doctests were never caught.
+doctest = false

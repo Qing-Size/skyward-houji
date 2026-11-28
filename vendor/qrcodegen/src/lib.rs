@@ -96,7 +96,6 @@
     clippy::suspicious_else_formatting,
     clippy::unnecessary_map_or,
     deprecated,
-    unused_lint,
     unused_parens,
 )]
 #![forbid(unsafe_code)]

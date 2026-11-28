@@ -31,7 +31,6 @@
     unused_assignments,
     unused_doc_comments,
     unused_imports,
-    unused_lint,
     unused_mut,
     unused_variables,
 )]

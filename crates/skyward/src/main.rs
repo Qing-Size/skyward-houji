@@ -10,7 +10,6 @@
     clippy::type_complexity,
     clippy::unnecessary_sort_by,
     dead_code,
-    unused_lint,
     unused_mut,
     unused_parens,
     unused_variables,

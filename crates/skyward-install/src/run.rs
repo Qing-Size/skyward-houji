@@ -838,7 +838,11 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
             let device = dir.join(&partition);
             image::check_super(&mut image::Expanded::new(&mut file, layout), skyward_block::size_bytes(&device)?)?;
             detach_once(ctx)?;
-            write_image(ctx, &mut file, layout, &[device], false)?;
+            if layout.sparse {
+                write_image(ctx, &mut file, layout, &[device], false)?;
+            } else {
+                write_super_only(ctx, &mut file, layout, &[device])?;
+            }
         }
         Place::Logical => {
             ensure!(slots == [slot], "{partition} is a logical partition of slot {slot:?}, and was sent to {slots:?}");
@@ -860,6 +864,18 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
 fn write_image<R: Read + io::Seek>(ctx: &Context, file: &mut R, layout: &Layout, devices: &[PathBuf], footer: bool) -> Result<()> {
     let mut told: Option<Instant> = None;
     image::write(file, layout, devices, footer, &mut |done, total| {
+        if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
+            ctx.send(Event::Progress(Stage::Flashing { done, total }));
+            told = Some(Instant::now());
+        }
+    })
+}
+
+/// Write a whole super image to the partition without reading the large
+/// partition back, telling the screen how far it is.
+fn write_super_only<R: Read + io::Seek>(ctx: &Context, file: &mut R, layout: &Layout, devices: &[PathBuf]) -> Result<()> {
+    let mut told: Option<Instant> = None;
+    image::write_only(file, layout, devices, &mut |done, total| {
         if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
             ctx.send(Event::Progress(Stage::Flashing { done, total }));
             told = Some(Instant::now());

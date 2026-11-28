@@ -617,6 +617,64 @@ pub fn write<R: Read + Seek>(image: &mut R, layout: &Layout, devices: &[PathBuf]
     Ok(())
 }
 
+/// Write what `layout` lays out of the file `image` to all of `devices`
+/// in one pass, without reading it back. A whole super image is nearly
+/// 10 GB, and reading it again to compare is what takes longest of the
+/// write, so the whole super a phone is flashed with goes through here; a
+/// sparse image stays on [`write`], which reads back only the stretches it
+/// wrote and leaves the rest as the partition has them. `progress` hears
+/// the bytes written so far, of all.
+pub fn write_only<R: Read + Seek>(image: &mut R, layout: &Layout, devices: &[PathBuf], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
+    ensure!(!devices.is_empty(), "no partition to write");
+    let mut outs = Vec::with_capacity(devices.len());
+    for path in devices {
+        let mut f = OpenOptions::new().read(true).write(true).open(path).with_context(|| format!("open {}", path.display()))?;
+        let size = f.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", path.display()))?;
+        outs.push((path, f, size));
+    }
+    let size = outs[0].2;
+    ensure!(outs.iter().all(|(_, _, s)| *s == size), "the partition differs in size between slots");
+    let len = layout.size;
+    ensure!(len <= size, "the image is {len} bytes, more than the {size} its partition holds");
+
+    let runs = &layout.runs;
+    let total = runs.iter().map(|run| run.len).sum::<u64>() * outs.len() as u64;
+
+    let mut buf = vec![0u8; CHUNK];
+    let mut done = 0;
+    for run in runs {
+        match run.source {
+            Source::File(from) => {
+                image.seek(SeekFrom::Start(from)).with_context(|| format!("seek to {from} in the image"))?;
+            }
+            // A run starts on a block and a chunk is whole patterns long,
+            // so every chunk of it starts the pattern anew.
+            Source::Fill(pattern) => buf.chunks_exact_mut(pattern.len()).for_each(|four| four.copy_from_slice(&pattern)),
+        }
+        for (path, f, _) in &mut outs {
+            f.seek(SeekFrom::Start(run.at)).with_context(|| format!("seek to {} in {}", run.at, path.display()))?;
+        }
+        let mut left = run.len;
+        while left > 0 {
+            let n = left.min(CHUNK as u64) as usize;
+            if let Source::File(_) = run.source {
+                image.read_exact(&mut buf[..n]).context("read the image")?;
+            }
+            for (path, f, _) in &mut outs {
+                f.write_all(&buf[..n]).with_context(|| format!("write {}", path.display()))?;
+                done += n as u64;
+                progress(done, total);
+            }
+            left -= n as u64;
+        }
+    }
+    for (path, f, _) in &mut outs {
+        f.sync_all().with_context(|| format!("flush {}", path.display()))?;
+        drop_cache(f).with_context(|| format!("drop the cached pages of {}", path.display()))?;
+    }
+    Ok(())
+}
+
 pub(crate) use skyward_block::drop_cache;
 
 /// Images made up for the tests here and in the modules that look into

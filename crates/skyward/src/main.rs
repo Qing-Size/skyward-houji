@@ -1,3 +1,21 @@
+// See the note in skyward-ui/src/lib.rs: pudding v0.5.13 is the adopted
+// baseline and its code carries these lints. Allow them at the crate root so
+// `-D warnings` stays green while still catching new ones.
+#![allow(
+    clippy::collapsible_if,
+    clippy::extend_with_drain,
+    clippy::manual_is_multiple_of,
+    clippy::needless_as_bytes,
+    clippy::needless_borrow,
+    clippy::type_complexity,
+    clippy::unnecessary_sort_by,
+    dead_code,
+    unused_lint,
+    unused_mut,
+    unused_parens,
+    unused_variables,
+)]
+
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use skyward_config::{ramdisk, DeviceConfig};

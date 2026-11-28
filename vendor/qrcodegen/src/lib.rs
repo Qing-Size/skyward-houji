@@ -85,6 +85,20 @@
 //! ```
 
 
+// Vendored third-party crate (Project Nayuki). Its upstream source carries
+// these lints; pudding's CI only runs `cargo build`. Allow them so the
+// workspace `-D warnings` gate stays green.
+#![allow(
+    clippy::legacy_numeric_constants,
+    clippy::manual_div_ceil,
+    clippy::manual_is_ascii_check,
+    clippy::manual_range_contains,
+    clippy::suspicious_else_formatting,
+    clippy::unnecessary_map_or,
+    deprecated,
+    unused_lint,
+    unused_parens,
+)]
 #![forbid(unsafe_code)]
 use std::convert::TryFrom;
 

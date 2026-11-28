@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "android")]
 mod backup;
+#[cfg(target_os = "android")]
 mod charge;
 mod remember;
 #[cfg(target_os = "android")]
@@ -29,7 +30,7 @@ mod input;
 mod keys;
 #[cfg(target_os = "android")]
 mod merge;
-#[cfg(any(target_os = "android", test))]
+#[cfg(target_os = "android")]
 mod modules;
 #[cfg(target_os = "android")]
 mod partwork;
@@ -65,6 +66,7 @@ mod wipe;
 mod wlan;
 #[cfg(target_os = "android")]
 mod appstate;
+#[cfg(target_os = "android")]
 mod wlanmem;
 
 #[derive(Parser)]
@@ -560,13 +562,16 @@ fn load_modules(cfg: &DeviceConfig, names: &[String]) -> Result<Vec<PathBuf>> {
 /// How long a page waits for the phone's own parts before it goes ahead.
 const PREPARE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
+#[cfg(target_os = "android")]
 struct Gate {
     done: std::sync::Mutex<bool>,
     cv: std::sync::Condvar,
 }
 
+#[cfg(target_os = "android")]
 static PREPARED: std::sync::OnceLock<Gate> = std::sync::OnceLock::new();
 
+#[cfg(target_os = "android")]
 fn gate() -> &'static Gate {
     PREPARED.get_or_init(|| Gate { done: std::sync::Mutex::new(false), cv: std::sync::Condvar::new() })
 }
@@ -575,24 +580,29 @@ fn gate() -> &'static Gate {
 /// warmed, rather than once the pages are built: the supplicant then scans and
 /// joins while the decrypt page is still being answered, as it did before the
 /// screen was brought up beside the phone's parts (2026-11-15).
+#[cfg(target_os = "android")]
 static WLAN: std::sync::OnceLock<std::sync::Mutex<Option<crate::wlan::Worker>>> = std::sync::OnceLock::new();
 
 /// The DNS servers the joined network gave, for looking names up: the WLAN
 /// thread started by the bringing-up fills it, and the pages look through the
 /// same one.
+#[cfg(target_os = "android")]
 pub(crate) fn servers() -> skyward_net::http::Servers {
     SERVERS.get_or_init(|| std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))).clone()
 }
 
+#[cfg(target_os = "android")]
 static SERVERS: std::sync::OnceLock<skyward_net::http::Servers> = std::sync::OnceLock::new();
 
 /// Take the WLAN's thread the bringing-up started, if it did.
+#[cfg(target_os = "android")]
 pub(crate) fn take_wlan() -> Option<crate::wlan::Worker> {
     WLAN.get().and_then(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).take())
 }
 
 /// Say the phone's own parts are up, or that bringing them up failed: either
 /// way nothing is gained by waiting longer.
+#[cfg(target_os = "android")]
 fn mark_prepared() {
     skyward_ui::progress::reached(skyward_ui::progress::READY);
     let gate = gate();
@@ -603,6 +613,7 @@ fn mark_prepared() {
 /// Wait until the phone's own parts are up, and no longer than [`PREPARE_WAIT`]:
 /// a page that needs the partitions or the phone's services calls this first,
 /// so that the screen can be drawn before any of them are ready.
+#[cfg(target_os = "android")]
 pub(crate) fn wait_prepared() {
     let gate = gate();
     let done = gate.done.lock().unwrap_or_else(|e| e.into_inner());
@@ -612,6 +623,7 @@ pub(crate) fn wait_prepared() {
 }
 
 /// Whether the phone's own parts are up already, asked without waiting.
+#[cfg(target_os = "android")]
 pub(crate) fn prepared() -> bool {
     *gate().done.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -621,6 +633,7 @@ pub(crate) fn prepared() -> bool {
 /// has not. Read here, on the thread the screen does not wait for, since the
 /// programs that settle it are started on this thread and a step chosen after
 /// they start would not reach the phone until the recovery starts again.
+#[cfg(target_os = "android")]
 fn charging_mode() -> skyward_ui::app::ChargeMode {
     match settings::read() {
         Ok(kept) => kept.settings().and_then(|s| skyward_ui::app::ChargeMode::named(&s.charge_mode)).unwrap_or_default(),
@@ -631,6 +644,7 @@ fn charging_mode() -> skyward_ui::app::ChargeMode {
     }
 }
 
+#[cfg(target_os = "android")]
 fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Found>) -> Result<()> {
     let watched = std::time::Instant::now();
     let nodes = skyward_sys::ueventd::apply()?;
@@ -1128,8 +1142,11 @@ fn recovery() -> Result<()> {
         let cfg = DeviceConfig::load(Path::new("/").join(ramdisk::CONFIG))?;
         // Whether the weaver's own slots are used is read here, before any page
         // asks for the data partition to be opened.
-        let weaver_first = cfg.data.as_ref().is_some_and(|d| d.weaver_first);
-        skyward_crypto::data::use_weaver_first(weaver_first);
+        #[cfg(target_os = "android")]
+        {
+            let weaver_first = cfg.data.as_ref().is_some_and(|d| d.weaver_first);
+            skyward_crypto::data::use_weaver_first(weaver_first);
+        }
         skyward_sys::kmsg(&format!(
             "{} {} recovery up, misc command {:?} args {:?}, asking for {:?}",
             cfg.device.codename,

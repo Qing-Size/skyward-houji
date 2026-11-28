@@ -98,13 +98,14 @@ mod tests {
     #[test]
     fn a_made_click_drives_whole_swings_then_turns_over() {
         let samples = made(172.4);
-        let drive = (DRIVE_SWINGS * RATE as f32 / 172.4).round() as usize;
-        assert_eq!(samples.len(), (3.5 * RATE as f32 / 172.4).round() as usize);
+        let all = (CLICK_MS / 1000.0 * RATE as f32).round() as usize;
+        let drive = (all as f32 * DRIVE_SHARE).round() as usize;
+        assert_eq!(samples.len(), all);
         assert_eq!(samples[0], 0);
-        assert_eq!(*samples.iter().max().unwrap(), i8::MAX);
+        assert_eq!(*samples[..drive].iter().max().unwrap(), i8::MAX, "it drives to the full");
+        assert_eq!(*samples[drive..].iter().min().unwrap(), -i8::MAX, "it turns over to the full the other way");
         let quarter = (RATE as f32 / 172.4 / 4.0).round() as usize;
         assert!(samples[quarter] > 120, "it rises first");
-        assert!(samples[drive + quarter] < -120, "it falls first once turned over");
     }
 
     #[test]

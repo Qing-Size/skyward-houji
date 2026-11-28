@@ -11,6 +11,8 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Mutex;
 
+mod name;
+
 /// Version of this build, shown on the About page.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -157,9 +159,11 @@ pub fn collect_with(cfg: &DeviceConfig, battery: Option<Battery>) -> Result<Devi
     };
     let system = SystemProps::current()?;
     Ok(DeviceInfo {
-        // The system names the exact edition; the configured model covers a
-        // system whose partitions are not mounted.
-        model: system.get("ro.product.marketname").unwrap_or_else(|| cfg.device.model.clone()),
+        // The name the owner gave the phone, once the data partition is open
+        // enough to read it; otherwise the system names the exact edition,
+        // and the configured model covers a system whose partitions are not
+        // mounted.
+        model: name::owner_name().or_else(|| system.get("ro.product.marketname")).unwrap_or_else(|| cfg.device.model.clone()),
         codename: cfg.device.codename.clone(),
         soc: cfg.device.soc.clone(),
         cpu: cpu(Path::new(CPU))?,

@@ -2560,6 +2560,7 @@ dependencies = [
  "sha2 0.10.9",
  "skyward-files",
  "tar",
+ "tempfile",
  "toml",
 ]
 
@@ -2797,6 +2798,7 @@ dependencies = [
  "anyhow",
  "libc",
  "skyward-block",
+ "tempfile",
 ]
 
 [[package]]

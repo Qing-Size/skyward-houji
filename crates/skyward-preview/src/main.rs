@@ -239,7 +239,7 @@ fn main() -> Result<()> {
             "204-flash-choosing-super-dark",
             true,
             Install::Choosing(Choice {
-                kind: ImageKind::Super { zstd: false },
+                kind: ImageKind::Super,
                 size: 9_663_676_416,
                 partitions: vec![FlashTarget { name: "super".into(), place: FlashPlace::Single }],
                 partition: 0,
@@ -1501,6 +1501,7 @@ fn router_link() -> Link {
         generation: Some(5),
         mac: "02:00:00:00:00:04".into(),
         reach: Some(Reach::Online),
+        by_hand: false,
     }
 }
 
@@ -1536,6 +1537,7 @@ fn skyward_newest() -> Newest {
             size: 43_145_196,
             sha256: "9f6165079529418d8f6635beddfdd9abf9a70c89d69eb467a9922b0db69bfaf1".into(),
         }),
+        notes: Vec::new(),
     }
 }
 
@@ -1614,6 +1616,7 @@ fn nezha(cfg: &DeviceConfig) -> DeviceInfo {
             design: Some(6_800_000),
             full: Some(6_543_000),
             voltage: Some(4_442_000),
+            current: None,
             // The recovery has no fast charging handshake with the charger.
             quick: false,
             plugged: true,

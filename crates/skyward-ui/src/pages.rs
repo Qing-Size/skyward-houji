@@ -511,6 +511,7 @@ pub fn about(cx: &Ctx) -> Frame {
 const CURRENT_SLOT: Text = three("当前槽位", "目前槽位", "Current slot");
 const DATA_STATE: Text = three("数据分区", "資料分區", "Data partition");
 const FREE_SPACE: Text = three("可用空间", "可用空間", "Free space");
+const RECOVERY_SIZE: Text = three("恢复分区大小", "恢復分區大小", "Recovery size");
 
 /// The phone's processor by its marketing name in `l`, from the phone's
 /// settings, or else by its cores.
@@ -536,6 +537,9 @@ fn about_cards(cx: &Ctx, c: &mut Canvas) -> (Vec<Hit>, f32, f32) {
     }
     if let Some(r) = &i.android {
         facts.push(Fact { title: l.pick(texts::specs::ANDROID_VERSION), value: r.clone(), link: false });
+    }
+    if let Some(bytes) = cx.state.recovery_bytes {
+        facts.push(Fact { title: l.pick(RECOVERY_SIZE), value: fmt::size(bytes), link: false });
     }
     let summary = widgets::facts(c, t, f, m.dp(490.7), &facts, &tone);
     out.push(Hit { rect: summary.rows[1], action: Action::Open(Screen::Specs) });

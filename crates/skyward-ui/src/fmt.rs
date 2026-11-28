@@ -50,6 +50,12 @@ pub fn gb(bytes: u64) -> String {
     format!("{:.1}GB", bytes as f64 / 1e9)
 }
 
+/// A partition's size, `bytes`, in MB below a GB and in GB above it.
+pub fn size(bytes: u64) -> String {
+    let gigabytes = bytes as f64 / 1e9;
+    if gigabytes >= 1.0 { format!("{gigabytes:.1}GB") } else { format!("{:.0}MB", bytes as f64 / 1e6) }
+}
+
 /// `已用/总量` as the stock settings count it: everything that is not free
 /// is used, against the marketed size.
 pub fn storage_used(s: &Storage) -> Option<String> {

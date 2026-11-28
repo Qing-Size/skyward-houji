@@ -1370,6 +1370,8 @@ impl<'a> Pages<'a> {
         let by_name = Path::new(skyward_block::BY_NAME);
         let both = |base: &str| -> Result<bool> { Ok(by_name.join(format!("{base}_a")).try_exists()? && by_name.join(format!("{base}_b")).try_exists()?) };
         app.state.recovery_partitions = both("recovery")?;
+        let recovery = by_name.join(if app.state.recovery_partitions { "recovery_a" } else { "recovery" });
+        app.state.recovery_bytes = skyward_block::size_bytes(&recovery).ok();
         app.state.dual_boot = app.state.recovery_partitions && both("boot")? && both("init_boot")?;
         // The second system's work; the systems are read at once, for the home
         // page to name the one that starts, once a switch cut off before is

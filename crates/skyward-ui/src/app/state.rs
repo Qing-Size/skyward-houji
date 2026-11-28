@@ -61,6 +61,9 @@ pub struct State {
     /// The phone keeps its recovery in a partition of each slot, which the
     /// install page then offers to keep Skyward in.
     pub recovery_partitions: bool,
+    /// The recovery partition's size in bytes, where the phone has one, as
+    /// the About page tells it.
+    pub recovery_bytes: Option<u64>,
     /// Skyward goes back into the recovery partitions an install writes
     /// over.
     pub keep_recovery: bool,
@@ -223,6 +226,7 @@ impl Default for State {
             script_output: Vec::new(),
             check_signature: false,
             recovery_partitions: false,
+            recovery_bytes: None,
             keep_recovery: true,
             reflash: None,
             mounts: Ok(Vec::new()),

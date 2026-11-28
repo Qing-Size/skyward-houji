@@ -7,12 +7,14 @@ use abootimg_oxide::binrw::io::Cursor;
 use abootimg_oxide::binrw::BinRead;
 use abootimg_oxide::{Header, VendorHeader};
 use android_sparse_image::{ChunkHeader, ChunkType, FileHeader, CHUNK_HEADER_BYTES_LEN, FILE_HEADER_BYTES_LEN, HEADER_MAGIC};
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
 use skyward_vab::Slot;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 
 const BOOT_MAGIC: &[u8] = b"ANDROID!";
 const VENDOR_BOOT_MAGIC: &[u8] = b"VNDRBOOT";
@@ -55,6 +57,10 @@ const FOOTER_MAGIC: &[u8] = b"AVBf";
 const FOOTER_LEN: u64 = 64;
 
 const CHUNK: usize = 1 << 20;
+/// How much of a super image is read and written at once, and how many of
+/// those pieces are in flight together.
+const SUPER_CHUNK: usize = 4 << 20;
+const PIECES: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageKind {
@@ -617,62 +623,84 @@ pub fn write<R: Read + Seek>(image: &mut R, layout: &Layout, devices: &[PathBuf]
     Ok(())
 }
 
-/// Write what `layout` lays out of the file `image` to all of `devices`
-/// in one pass, without reading it back. A whole super image is nearly
-/// 10 GB, and reading it again to compare is what takes longest of the
-/// write, so the whole super a phone is flashed with goes through here; a
-/// sparse image stays on [`write`], which reads back only the stretches it
-/// wrote and leaves the rest as the partition has them. `progress` hears
-/// the bytes written so far, of all.
-pub fn write_only<R: Read + Seek>(image: &mut R, layout: &Layout, devices: &[PathBuf], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
-    ensure!(!devices.is_empty(), "no partition to write");
-    let mut outs = Vec::with_capacity(devices.len());
-    for path in devices {
-        let mut f = OpenOptions::new().read(true).write(true).open(path).with_context(|| format!("open {}", path.display()))?;
-        let size = f.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", path.display()))?;
-        outs.push((path, f, size));
+/// Write a whole super image, `image`, to the super partition `device`,
+/// reading and writing at once so a nearly 10 GB partition is not read
+/// again, and zeroing nothing past the image. `expected` is the size the
+/// image should be, where it is known, and `progress` hears the bytes
+/// written so far, of that size. The caller seeks `image` to the image's
+/// start first: checking a super leaves the file where its metadata ends.
+pub fn flash_super<R: Read>(image: R, device: &Path, expected: Option<u64>, progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
+    let mut out = OpenOptions::new().read(true).write(true).open(device).with_context(|| format!("open {}", device.display()))?;
+    let size = out.seek(SeekFrom::End(0)).with_context(|| format!("find the size of {}", device.display()))?;
+    out.seek(SeekFrom::Start(0)).with_context(|| format!("rewind {}", device.display()))?;
+    if let Some(len) = expected {
+        ensure!(len <= size, "the image is {len} bytes, more than the {size} its partition holds");
     }
-    let size = outs[0].2;
-    ensure!(outs.iter().all(|(_, _, s)| *s == size), "the partition differs in size between slots");
-    let len = layout.size;
-    ensure!(len <= size, "the image is {len} bytes, more than the {size} its partition holds");
+    let total = expected.unwrap_or(size);
+    write_while_reading(image, out, size, total, progress).with_context(|| format!("write {}", device.display()))
+}
 
-    let runs = &layout.runs;
-    let total = runs.iter().map(|run| run.len).sum::<u64>() * outs.len() as u64;
+/// Copy `image` into `out`, reading and writing at once, and flushing `out`
+/// once it all went in; no more than `limit` bytes are taken from `image`.
+fn write_while_reading<R: Read>(mut image: R, mut out: File, limit: u64, total: u64, progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
+    // As many places for what is free as there are pieces, so that they all
+    // go in before the writing thread starts taking them.
+    let (free_tx, free_rx) = mpsc::sync_channel::<Vec<u8>>(PIECES);
+    let (data_tx, data_rx) = mpsc::sync_channel::<(Vec<u8>, usize)>(PIECES);
+    thread::scope(|scope| -> Result<()> {
+        for _ in 0..PIECES {
+            free_tx.send(vec![0u8; SUPER_CHUNK]).expect("the channel is open");
+        }
+        let writer = scope.spawn(move || -> Result<()> {
+            while let Ok((buf, n)) = data_rx.recv() {
+                out.write_all(&buf[..n]).context("write the image")?;
+                let _ = free_tx.send(buf);
+            }
+            out.sync_all().context("flush the image")
+        });
+        let mut done = 0u64;
+        let mut failure = None;
+        while let Ok(mut buf) = free_rx.recv() {
+            let n = match fill(&mut image, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    failure = Some(anyhow::Error::from(e).context("read the image"));
+                    break;
+                }
+            };
+            done += n as u64;
+            if done > limit {
+                failure = Some(anyhow!("the image is larger than the {limit} bytes its partition holds"));
+                break;
+            }
+            if data_tx.send((buf, n)).is_err() {
+                break;
+            }
+            progress(done.min(total), total);
+            if done >= limit {
+                break;
+            }
+        }
+        drop(data_tx);
+        drop(free_rx);
+        let flushed = writer.join().expect("the writing thread does not panic");
+        match failure {
+            Some(e) => Err(e),
+            None => flushed,
+        }
+    })
+}
 
-    let mut buf = vec![0u8; CHUNK];
-    let mut done = 0;
-    for run in runs {
-        match run.source {
-            Source::File(from) => {
-                image.seek(SeekFrom::Start(from)).with_context(|| format!("seek to {from} in the image"))?;
-            }
-            // A run starts on a block and a chunk is whole patterns long,
-            // so every chunk of it starts the pattern anew.
-            Source::Fill(pattern) => buf.chunks_exact_mut(pattern.len()).for_each(|four| four.copy_from_slice(&pattern)),
-        }
-        for (path, f, _) in &mut outs {
-            f.seek(SeekFrom::Start(run.at)).with_context(|| format!("seek to {} in {}", run.at, path.display()))?;
-        }
-        let mut left = run.len;
-        while left > 0 {
-            let n = left.min(CHUNK as u64) as usize;
-            if let Source::File(_) = run.source {
-                image.read_exact(&mut buf[..n]).context("read the image")?;
-            }
-            for (path, f, _) in &mut outs {
-                f.write_all(&buf[..n]).with_context(|| format!("write {}", path.display()))?;
-                done += n as u64;
-                progress(done, total);
-            }
-            left -= n as u64;
+/// `read` until it reads something or ends, and not the interruption by a
+/// signal that says nothing came of it.
+fn fill(image: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    loop {
+        match image.read(buf) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            other => return other,
         }
     }
-    for (path, f, _) in &mut outs {
-        f.sync_all().with_context(|| format!("flush {}", path.display()))?;
-        drop_cache(f).with_context(|| format!("drop the cached pages of {}", path.display()))?;
-    }
-    Ok(())
 }
 
 pub(crate) use skyward_block::drop_cache;

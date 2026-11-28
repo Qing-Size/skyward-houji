@@ -22,7 +22,7 @@ use skyward_sys::{kmsg, prop};
 use skyward_vab::{Slot, SlotMaps, SnapshotState};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Seek, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -841,7 +841,10 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
             if layout.sparse {
                 write_image(ctx, &mut file, layout, &[device], false)?;
             } else {
-                write_super_only(ctx, &mut file, layout, &[device])?;
+                // Checking the super left the file where the metadata it
+                // read ends; a whole super is written from its start.
+                file.seek(io::SeekFrom::Start(0)).context("rewind the image")?;
+                flash_super(ctx, &mut file, &device, Some(layout.size))?;
             }
         }
         Place::Logical => {
@@ -871,11 +874,11 @@ fn write_image<R: Read + io::Seek>(ctx: &Context, file: &mut R, layout: &Layout,
     })
 }
 
-/// Write a whole super image to the partition without reading the large
-/// partition back, telling the screen how far it is.
-fn write_super_only<R: Read + io::Seek>(ctx: &Context, file: &mut R, layout: &Layout, devices: &[PathBuf]) -> Result<()> {
+/// Write a whole super image without reading the large partition back,
+/// telling the screen how far it is.
+fn flash_super<R: Read>(ctx: &Context, file: R, device: &Path, expected: Option<u64>) -> Result<()> {
     let mut told: Option<Instant> = None;
-    image::write_only(file, layout, devices, &mut |done, total| {
+    image::flash_super(file, device, expected, &mut |done, total| {
         if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
             ctx.send(Event::Progress(Stage::Flashing { done, total }));
             told = Some(Instant::now());

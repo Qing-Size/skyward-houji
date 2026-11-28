@@ -775,15 +775,7 @@ pub fn image_kind(l: Lang, kind: ImageKind) -> (&'static str, String) {
         ImageKind::VendorBoot => (image::VENDOR_BOOT, holds::VENDOR_RAMDISK),
         ImageKind::Dtbo => (image::DTBO, holds::OVERLAYS),
         ImageKind::Vbmeta => (image::VBMETA, holds::VERIFIED_BOOT_DATA),
-        ImageKind::Super { zstd: true } => (
-            image::WHOLE_SUPER,
-            three(
-                "zstd 压缩的动态分区，解压后整份写入",
-                "zstd 壓縮的動態分區，解壓後整份寫入",
-                "Holds the dynamic partitions, zstd-compressed",
-            ),
-        ),
-        ImageKind::Super { zstd: false } => (image::WHOLE_SUPER, holds::LOGICAL_PARTITIONS),
+        ImageKind::Super => (image::WHOLE_SUPER, holds::LOGICAL_PARTITIONS),
         ImageKind::Filesystem(filesystem) => return (l.pick(image::PARTITION), holds::filesystem(l, filesystem.name())),
         ImageKind::Other => (image::PARTITION, holds::UNIDENTIFIED),
     };
@@ -1226,6 +1218,7 @@ mod tests {
             design: Some(5_500_000),
             full: Some(5_095_000),
             voltage: Some(4_482_000),
+            current: None,
             quick: false,
             plugged: true,
         };
@@ -1604,6 +1597,7 @@ mod tests {
                 generation: None,
                 mac: "02:00:00:00:00:05".into(),
                 reach,
+                by_hand: false,
             })
         };
         assert_eq!(joining(HANS, &joined(None)), "已连接", "until it has been looked at");

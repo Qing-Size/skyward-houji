@@ -452,7 +452,7 @@ mod tests {
         let (f, i) = (fonts(), info());
         let mut app = sideloading(&f, &i);
         let partitions = vec![FlashTarget { name: "super".into(), place: FlashPlace::Single }];
-        app.install(Event::Image { kind: ImageKind::Super { zstd: false }, size: 9_663_676_416, partitions }, 0);
+        app.install(Event::Image { kind: ImageKind::Super, size: 9_663_676_416, partitions }, 0);
         assert!(!app.frame(&f, &i).hits.iter().any(|h| matches!(h.action, Action::FlashSlots(_))));
         assert_eq!(swipe_to_flash(&mut app, &f, &i), vec![Effect::Flash { partition: "super".into(), place: FlashPlace::Single, pick: Pick::Current }]);
         app.install(Event::Finished(Outcome::Flashed { partition: "super".into(), slots: Vec::new() }), 1000);

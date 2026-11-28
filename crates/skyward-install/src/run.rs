@@ -867,6 +867,9 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
                     if layout.sparse {
                         write_image(ctx, &mut file, layout, &[device], false)?;
                     } else {
+                        // Checking the super left the file where the metadata
+                        // it read ends; a whole super is written from its start.
+                        file.seek(SeekFrom::Start(0)).context("rewind the image")?;
                         flash_super(ctx, &mut file, &device, Some(layout.size))?;
                     }
                 }

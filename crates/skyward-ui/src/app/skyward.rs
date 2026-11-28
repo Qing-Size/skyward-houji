@@ -69,9 +69,8 @@ impl App {
         let job = self.state.skyward_job.as_mut().expect("only an update under way moves on");
         job.stage = Some(stage);
         job.rate = rate;
-        if self.screen() == Screen::SkywardUpdate {
-            self.refresh();
-        }
+        // 不只在更新页重画：退到首页也要能看见进度条在动。
+        self.refresh();
     }
 
     /// Updating Skyward has ended: its page says how, lit for the user to
@@ -94,6 +93,7 @@ mod tests {
         Newest {
             version: "0.1.4".into(),
             newer,
+            notes: Vec::new(),
             build: Some(Build {
                 name: "skyward-v0.1.4-ishtar-OS3.0.308.0.WMACNXM.zip".into(),
                 url: "https://api.github.com/repos/kirklin/skyward/releases/assets/719751598".into(),
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn skyward_updates_from_its_newest_release_and_its_page_stays_until_the_build_is_in() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::Home, W, H, PPD);
         app.refresh();
         let offered = |app: &mut App| app.frame(&f, &i).hits.iter().any(|h| h.action == Action::Open(Screen::SkywardUpdate));
         assert!(!offered(&mut app), "a phone whose WLAN the recovery does not bring up");
@@ -130,8 +130,11 @@ mod tests {
         app.state.install = Install::Idle;
         assert_eq!(tap(&mut app, &f, &i, Action::UpdateSkyward), vec![Effect::UpdateSkyward(build.clone())]);
         app.skyward_progress(SkywardStage::Download(Progress::Downloading { done: 10_000_000, total: 42_739_608 }), 2_000_000);
+        // 下载在后台走：页面可以退出去做别的，回来还在（2026-11-17）。
         app.key(Key::Back, 0);
-        assert_eq!(app.screen(), Screen::SkywardUpdate, "the page stays while the build downloads");
+        assert_eq!(app.screen(), Screen::Home, "downloading goes on behind the pages");
+        assert!(app.state.updating_skyward(), "the build is still coming in");
+        app.open(Screen::SkywardUpdate);
         assert_eq!(tap(&mut app, &f, &i, Action::StopSkywardUpdate), vec![Effect::StopSkywardUpdate]);
         assert!(!app.frame(&f, &i).hits.iter().any(|h| h.action == Action::StopSkywardUpdate), "stopping, it is not asked again");
         // An end lights the panel, and a touch just after only keeps it lit.
@@ -144,13 +147,14 @@ mod tests {
         app.skyward_ended(SkywardEnd::Updated(vec![Slot::A, Slot::B]), 3000);
         assert_eq!(tap_at(&mut app, &f, &i, Action::RebootTo(Target::Recovery), 5000), vec![Effect::Reboot(Target::Recovery)]);
         app.key(Key::Back, 5100);
-        assert_eq!(app.screen(), Screen::Settings);
+        assert_eq!(app.screen(), Screen::Home, "back to where the update was asked for");
     }
+
 
     #[test]
     fn the_skyward_page_asks_github_as_it_opens_once_a_network_is_joined() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        let mut app = App::new(Screen::Home, W, H, PPD);
         app.state.wlan = Some(connected("Skyward"));
         app.state.recovery_partitions = true;
         app.refresh();

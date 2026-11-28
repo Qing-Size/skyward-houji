@@ -59,9 +59,43 @@ pub(super) fn spot(app: &mut App, f: &Fonts, i: &DeviceInfo, action: Action) -> 
         let (x, y) = h.rect.centre();
         return (x, y + H as f32 - d.canvas.h as f32);
     }
+    // The control may be below the part of the page on screen: the page is
+    // scrolled on until it comes up, as a finger would scroll it.
+    let mut scroll = scroll;
+    for _ in 0..400 {
+        // 借用只在算位置这一小段里，滚动要可变借用
+        let found = {
+            let fr = app.frame(f, i);
+            // 键盘与其他直接画在页面上的控件不走 rows
+            if let Some(h) = fr.hits.iter().find(|h| h.action == action) {
+                let (x, y) = h.rect.centre();
+                return (x, y - scroll);
+            }
+            fr.rows.as_ref().and_then(|rows| {
+                let answer = rows.action?;
+                let k = (0..rows.count()).find(|&k| answer(k) == action)?;
+                let (x, y) = rows.rect(k, fr.canvas.w as f32).centre();
+                let shown = y - scroll;
+                (shown >= 0.0 && shown <= H as f32).then_some((x, shown))
+            })
+        };
+        if let Some(pos) = found {
+            return pos;
+        }
+        let lowest = app.max_scroll();
+        if scroll >= lowest {
+            break;
+        }
+        scroll = (scroll + 200.0).min(lowest);
+        scroll_to(app, f, scroll, 0);
+    }
+    let fr = app.frame(f, i);
     let rows = fr.rows.as_ref().expect("control on the page");
     let answer = rows.action.expect("control on the page");
-    let k = (0..rows.count()).find(|&k| answer(k) == action).expect("control on the page");
+    let k = (0..rows.count()).find(|&k| answer(k) == action).unwrap_or_else(|| {
+        let acts: Vec<String> = fr.hits.iter().map(|h| format!("{:?}", h.action)).collect();
+        panic!("control on the page: {:?}; hits = [{}]", action, acts.join(", "))
+    });
     let (x, y) = rows.rect(k, fr.canvas.w as f32).centre();
     (x, y - scroll)
 }
@@ -96,9 +130,15 @@ pub(super) fn tap_button(app: &mut App, f: &Fonts, i: &DeviceInfo, now: u64) -> 
 
 /// `screen` opened from the home page, so there is a page to go back
 /// to.
+/// A page opened straight, its frame drawn: what a test of that page needs is
+/// the page, not the way to it -- and some pages are not reached from the home
+/// page at all.
 pub(super) fn opened(screen: Screen, f: &Fonts, i: &DeviceInfo) -> App {
+    // Pushed onto the home page's stack rather than clicked to: the way there
+    // is not what a test of the page is about, and not every page has one.
     let mut app = App::new(Screen::Home, W, H, PPD);
-    tap(&mut app, f, i, Action::Open(screen));
+    app.open(screen);
+    app.frame(f, i);
     app
 }
 
@@ -106,7 +146,17 @@ pub(super) fn opened(screen: Screen, f: &Fonts, i: &DeviceInfo) -> App {
 /// unless it discharges.
 pub(super) fn battery_at(level: u8, charge: Charge) -> skyward_info::Battery {
     let plugged = charge != Charge::Discharging;
-    skyward_info::Battery { level, charge, temp: Some(352), health: None, cycles: None, design: None, full: None, voltage: None, quick: false, plugged }
+    skyward_info::Battery { level, charge, temp: Some(352), health: None, cycles: None, design: None, full: None, voltage: None, current: None, quick: false, plugged }
+}
+
+/// The lock's knob slid the whole way along and let go: the lock gives way.
+pub(super) fn unlock(app: &mut App, f: &Fonts, now: u64) {
+    let track = app.lock_track();
+    let y = track.centre().1;
+    app.touch(Touch::Down(track.x + track.h / 2.0, y), f, now);
+    app.touch(Touch::Move(track.x + track.w / 2.0, y), f, now + 8);
+    app.touch(Touch::Move(track.x + track.w, y), f, now + 16);
+    app.touch(Touch::Up, f, now + 24);
 }
 
 /// The grey of the screen's pixel at (`x`, `y`).
@@ -168,6 +218,8 @@ pub(super) fn flick(app: &mut App, f: &Fonts, start: u64, step: f32) -> u64 {
 /// margin, clear of the sliders, which a finger landing on moves
 /// instead of the page.
 pub(super) fn scroll_to(app: &mut App, f: &Fonts, to: f32, now: u64) {
+    // 页面短了就别硬拖到够不着的地方：停在它自己的底（或顶）。
+    let to = if to < 0.0 { to } else { to.min(app.max_scroll()) };
     let (from, x) = (app.top().1, app.theme().m.margin / 2.0);
     app.touch(Touch::Down(x, 2400.0), f, now);
     app.touch(Touch::Move(x, 2300.0), f, now + 200);
@@ -217,12 +269,38 @@ pub(super) fn light_on(app: &mut App, f: &Fonts, i: &DeviceInfo, stop: Stop) {
 
 /// Drag the knob of a swipe-to-confirm track all the way across.
 pub(super) fn swipe(app: &mut App, f: &Fonts, i: &DeviceInfo, which: Confirm) -> Vec<Effect> {
-    let track = app.frame(f, i).hits.iter().find(|h| h.action == Action::Confirm(which)).expect("the track is on the page").rect;
-    let y = track.centre().1 - app.top().1;
+    // A track on the page, or the one on the card that asks before an entry is
+    // deleted: that one is fixed on the screen, so it is not scrolled, and the
+    // card is drawn on the screen rather than on the page for its track to be
+    // where it is.
+    app.frame(f, i);
+    if app.state.app_confirm.is_some() || app.state.module_confirm.is_some() {
+        let t = app.theme();
+        let mut c = Canvas::new(t.m.w, t.m.h);
+        app.compose_uninstall(&mut c, f);
+    } else if app.state.asking_delete || app.state.asking_many.is_some() {
+        let t = app.theme();
+        let mut c = Canvas::new(t.m.w, t.m.h);
+        app.compose_asking(&mut c, f);
+    }
+    let (track, on_card) = match app.asking_track {
+        Some(track) if app.asking.is_some_and(|(_, w)| w == which) => (track, true),
+        _ => (
+            app.frame(f, i).hits.iter().find(|h| h.action == Action::Confirm(which)).expect("the track is on the page").rect,
+            false,
+        ),
+    };
+    let y = match on_card {
+        true => track.centre().1,
+        false => track.centre().1 - app.top().1,
+    };
     let mut fx = app.touch(Touch::Down(track.x + track.h / 2.0, y), f, 0);
     fx.extend(app.touch(Touch::Move(track.x + track.w / 2.0, y), f, 0));
     fx.extend(app.touch(Touch::Move(track.x + track.w, y), f, 0));
     fx.extend(app.touch(Touch::Up, f, 0));
+    // The click of the motor is the same for every slider and changes nothing
+    // on the page: what the tests are about is what the page did.
+    fx.retain(|e| !matches!(e, Effect::Haptic));
     fx
 }
 
@@ -247,7 +325,8 @@ pub(super) fn folder(items: usize) -> FileKind {
 
 /// The file manager in /sdcard, listing a folder and a file.
 pub(super) fn in_sdcard(f: &Fonts, i: &DeviceInfo) -> App {
-    let mut app = App::new(Screen::Advanced, W, H, PPD);
+    // The file manager is on the home page, not in the advanced one.
+    let mut app = App::new(Screen::Home, W, H, PPD);
     tap(&mut app, f, i, Action::Open(Screen::Files));
     app.set_files("/sdcard".into(), Ok(vec![entry("DCIM", folder(2)), entry("a.zip", FileKind::File)]), LISTED);
     app
@@ -302,6 +381,7 @@ pub(super) fn connected(name: &str) -> Wlan {
             generation: Some(5),
             mac: "02:00:00:00:00:04".into(),
             reach: Some(Reach::Online),
+            by_hand: false,
         }),
     )
 }

@@ -15,7 +15,8 @@ pub struct Hit {
 pub struct Frame {
     pub canvas: Canvas,
     pub hits: Vec<Hit>,
-    pub title: &'static str,
+    /// 页面顶上那个大字：页面自带的，或者主人给首页起的名字（2026-11-27）。
+    pub title: std::borrow::Cow<'static, str>,
     pub back: bool,
     /// The page opens with its title in large type, scrolling away with it.
     pub header: bool,
@@ -49,6 +50,12 @@ pub struct Frame {
     /// The round button at the right end of the bar: what it shows, and
     /// what touching it does.
     pub button: Option<(widgets::Glyph, Action)>,
+    /// 顶部栏上跟着返回按钮的一排胶囊，已经画好的一小块画布。
+    pub bar_art: Option<Canvas>,
+    /// 那一小块里每枚圆钮落在哪儿（画布自己的坐标）。
+    pub bar_hits: Vec<Hit>,
+    /// 画在页面大标题右边的那一小块，和它在屏幕上的位置。
+    pub title_art: Option<(Canvas, f32, f32)>,
 }
 
 /// A strip held at the bottom of the screen over the page, such as the
@@ -192,11 +199,17 @@ pub struct HeroArt {
 impl Frame {
     /// A page of cards on the grey page colour that opens with its title in
     /// large type and goes back with `<`.
-    pub fn new(t: &Theme, canvas: Canvas, hits: Vec<Hit>, title: &'static str, content_top: f32) -> Frame {
+    pub fn new(
+        t: &Theme,
+        canvas: Canvas,
+        hits: Vec<Hit>,
+        title: impl Into<std::borrow::Cow<'static, str>>,
+        content_top: f32,
+    ) -> Frame {
         Frame {
             canvas,
             hits,
-            title,
+            title: title.into(),
             back: true,
             header: true,
             content_top,
@@ -210,6 +223,9 @@ impl Frame {
             dock: None,
             caret: None,
             button: None,
+            bar_art: None,
+            bar_hits: Vec::new(),
+            title_art: None,
         }
     }
 

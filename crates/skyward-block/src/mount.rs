@@ -362,8 +362,8 @@ mod sys {
 
     #[derive(Default)]
     struct Parked {
-        /// Original mount point, where it waits, and whether it is a folder.
-        moved: Vec<(PathBuf, PathBuf, bool)>,
+        /// Original mount point and where it waits.
+        moved: Vec<(PathBuf, PathBuf)>,
         /// Shared mounts made private for the moves.
         privatized: Vec<PathBuf>,
     }
@@ -391,45 +391,17 @@ mod sys {
         }
         for (i, m) in top.iter().enumerate() {
             let at = Path::new(PARK).join(i.to_string());
-            // A mount may be of a file alone, as a setting a program is
-            // handed in place of the phone's own is: it moves onto a file.
-            let dir = m.mount_point.is_dir();
-            if dir {
-                fs::create_dir_all(&at).with_context(|| format!("create {}", at.display()))?;
-            } else {
-                fs::create_dir_all(PARK).with_context(|| format!("create {PARK}"))?;
-                fs::File::create(&at).with_context(|| format!("create {}", at.display()))?;
-            }
+            fs::create_dir_all(&at).with_context(|| format!("create {}", at.display()))?;
             move_mount(&m.mount_point, &at)?;
-            parked.moved.push((m.mount_point.clone(), at, dir));
+            parked.moved.push((m.mount_point.clone(), at));
         }
         Ok(parked)
     }
 
-    /// Make sure something of the kind a mount was on is at `home`, as the
-    /// recovery's own root lacks what a phone partition had there.
-    fn keep_home(home: &Path, dir: bool) -> Result<()> {
-        if dir {
-            return fs::create_dir_all(home).with_context(|| format!("make {} to keep the mount there", home.display()));
-        }
-        if let Some(parent) = home.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("make {} to keep the mount there", parent.display()))?;
-        }
-        if !home.exists() {
-            fs::File::create(home).with_context(|| format!("make {} to keep the mount there", home.display()))?;
-        }
-        Ok(())
-    }
-
     fn unpark(parked: Parked) -> Result<()> {
-        for (home, at, dir) in &parked.moved {
-            keep_home(home, *dir)?;
+        for (home, at) in &parked.moved {
             move_mount(at, home)?;
-            if *dir {
-                fs::remove_dir(at).with_context(|| format!("remove {}", at.display()))?;
-            } else {
-                fs::remove_file(at).with_context(|| format!("remove {}", at.display()))?;
-            }
+            fs::remove_dir(at).with_context(|| format!("remove {}", at.display()))?;
         }
         if !parked.moved.is_empty() {
             fs::remove_dir(PARK).with_context(|| format!("remove {PARK}"))?;
@@ -452,7 +424,7 @@ mod sys {
                 return Err(e);
             }
         };
-        if let Some((home, _, _)) = parked.moved.iter().find(|(home, _, _)| !home.is_dir() && !home.is_file()) {
+        if let Some((home, _)) = parked.moved.iter().find(|(home, _)| !home.is_dir()) {
             let home = home.clone();
             umount(target)?;
             unpark(parked)?;
@@ -473,6 +445,29 @@ mod sys {
         under_parked(target, umount_detach)
     }
 
+    /// Take away every mount at or under `base`, the deepest first. Nothing
+    /// here counts as a failure: a drive pulled out of the port has already had
+    /// its mounts go with it, and a folder that was never a mount point is no
+    /// work at all.
+    ///
+    /// `umount_detach_over` is not this: it unmounts `target` itself first and
+    /// gives up with EINVAL where `target` is only a folder holding the mounts
+    /// -- which is what the OTG drive's folder is, once each of its divisions
+    /// is shown under it (2026-11-16: pulling the drive ended the recovery,
+    /// and with it the partition was locked again).
+    pub fn umount_under(base: &Path) -> Result<()> {
+        let mut points: Vec<std::path::PathBuf> = mounts()?
+            .into_iter()
+            .map(|m| m.mount_point)
+            .filter(|p| p.starts_with(base))
+            .collect();
+        points.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+        for point in points {
+            let _ = umount_detach(&point);
+        }
+        Ok(())
+    }
+
     fn under_parked(target: &Path, unmount: fn(&Path) -> Result<()>) -> Result<()> {
         let mut parked = park(target)?;
         if let Err(e) = unmount(target) {
@@ -483,8 +478,11 @@ mod sys {
         // What shows there now, if anything, is another mount, which park
         // left as it was.
         parked.privatized.retain(|p| p != target);
-        // What shows at `target` now may lack a folder or file one of them
-        // was on, as the recovery's own root lacks a phone partition's.
+        // What shows at `target` now may lack a folder one of them was on,
+        // as the recovery's own root lacks a phone partition's folders.
+        for (home, _) in &parked.moved {
+            fs::create_dir_all(home).with_context(|| format!("make {} to keep the mount there", home.display()))?;
+        }
         unpark(parked)
     }
 
@@ -608,6 +606,10 @@ mod sys {
         bail!("this host does not unmount {}", target.display())
     }
 
+    pub fn umount_under(base: &Path) -> Result<()> {
+        bail!("this host does not unmount {}", base.display())
+    }
+
     pub fn is_mount_point(path: &Path) -> Result<bool> {
         bail!("this host has no mount table to look up {}", path.display())
     }
@@ -647,7 +649,7 @@ mod sys {
 
 pub use sys::{
     bind, holders, holding, is_mount_point, mount, mount_ids, mount_ro, mount_ro_over, points_of, release, remount_writable, restore,
-    umount, umount_detach, umount_detach_over, umount_over, visible,
+    umount, umount_detach, umount_detach_over, umount_over, umount_under, visible,
 };
 
 #[cfg(test)]

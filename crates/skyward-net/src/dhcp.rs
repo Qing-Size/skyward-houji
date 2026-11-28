@@ -234,20 +234,27 @@ mod client {
     /// again from the start.
     pub fn obtain(interface: &str, mac: [u8; 6], stop: &AtomicBool) -> Result<Lease> {
         let s = socket(interface)?;
+        // 每轮收到的、不是 ACK 的应答记下来：连不上时日志能看出服务器到底
+        // 回了什么（NAK 还是又发了个 offer，哪个地址、哪台服务器）。
+        // 2026-11-27。
+        let mut seen: Vec<String> = Vec::new();
         for _ in 0..3 {
             let id = xid();
             let (address, server) = match exchange(&s, broadcast(), &discover(id, mac)?, id, mac, stop)? {
                 Some(Reply::Offer { address, server }) => (address, server),
-                Some(_) => continue,
+                Some(other) => {
+                    seen.push(format!("{other:?} where an offer was due"));
+                    continue;
+                }
                 None => bail!("no DHCP server offered an address"),
             };
             match exchange(&s, broadcast(), &request(id, mac, address, server)?, id, mac, stop)? {
                 Some(Reply::Ack(lease)) => return Ok(lease),
-                Some(_) => continue,
+                Some(other) => seen.push(format!("{other:?} for {address} from {server}")),
                 None => bail!("the DHCP server at {server} did not give the address it offered"),
             }
         }
-        bail!("the DHCP server kept taking back the address it offered")
+        bail!("the DHCP server kept taking back the address it offered: {}", seen.join("; "))
     }
 
     /// How asking to keep a lease went.

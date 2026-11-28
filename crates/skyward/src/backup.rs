@@ -259,7 +259,9 @@ impl Worker {
                 End::Refused(why) => format!("backup refused: {why}"),
                 End::Failed(why) => format!("backup failed: {why}"),
             };
-            skyward_sys::kmsg(&said).expect("the kernel log takes a line");
+            // 写不进去也不能让 worker 陪葬：expect 一 panic，线程就死在这里，
+            // Event::Ended 永远发不出去，页面停在「正在备份」不动（2026-11-27）。
+            let _ = skyward_sys::kmsg(&said);
             tell(Event::Ended(end));
         })?;
         Ok(Worker { cancel, worker })

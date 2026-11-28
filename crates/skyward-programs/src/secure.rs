@@ -25,6 +25,19 @@ const BOOT: (&str, &str) = ("android.hardware.boot", "IBootControl");
 /// secure element.
 const WEAVER: &str = "android.hardware.weaver.IWeaver/default";
 
+/// Xiaomi's charging service, which the kernel asks before it lets a charge
+/// draw more than 2 A: a recovery without it charges at 2 A however much the
+/// charger offers. One of the two programs a charge step names.
+const CHARGING: &str = "vendor.xiaomi.hardware.micharge.IMiCharge/default";
+
+/// Xiaomi's secret keeper, the program its system has the charger verified
+/// through: until it has, a charge stays at a fixed voltage however much the
+/// charger offers. The other program a charge step names.
+const SECRET: &str = "batterysecret";
+
+/// Where the vendor partition keeps its programs.
+const VENDOR_PROGRAMS: &str = "/vendor/bin";
+
 /// The service of one secure element, by its package and its interface,
 /// and what the ones built into the phone are named after, as opposed to
 /// the SIM cards'.
@@ -70,13 +83,6 @@ const WEAVERS: [(&str, Through, Option<Driver>); 3] = [
     (".nxp-qti", Through::ElementService, Some(NXP_CONTROLLER)),
     ("weaver-service", Through::Own("vendor.goodix.hardware.secure_element_aidl.IGdxEse"), None),
 ];
-
-/// The makes of weaver the recovery does not start, by what the name of
-/// their program ends in: NXP's reads its first slot and then ends in a
-/// segmentation fault, and leaves the secure element's channel it read
-/// through spoiled for every program after it. The recovery asks the
-/// applet itself instead, as `skyward_crypto` does where no weaver runs.
-const UNSTARTED: [&str; 1] = [".nxp-qti"];
 
 /// Qualcomm's programs between Android and the secure world, by the names
 /// of their files: the one that registers the listeners the secure world
@@ -173,9 +179,8 @@ enum Ready {
 /// phone with a weaver, load the driver its secure element takes, start
 /// what the weaver reaches its secure element through, serving Android's
 /// secure element service where that is what it goes through, and the
-/// weaver, unless it is of a make the recovery does not start; and start
-/// the boot control.
-pub fn steps(phone: &Phone) -> Result<Vec<Step>> {
+/// weaver; and start the boot control.
+pub fn steps(phone: &Phone, charging: bool, verifying: bool) -> Result<Vec<Step>> {
     let mut out = Vec::new();
     let start = |out: &mut Vec<Step>, started: Started| out.push(Step::Start(Box::new(started)));
     if let Some(listeners) = named(phone, LISTENERS)? {
@@ -218,7 +223,61 @@ pub fn steps(phone: &Phone) -> Result<Vec<Step>> {
     let program = behind(phone, "the boot control", &boot, |file| file.starts_with(BOOT.0))?;
     let registers = besides(phone, program, &boot, alone);
     start(&mut out, started(phone, program, ready(boot, boot_kind), registers));
+
+    // Xiaomi's charging service, on a phone that carries it: the kernel asks
+    // it before it lets a charge draw more than 2 A, so a recovery without it
+    // charges at 2 A however much the charger offers. It is started last,
+    // since nothing else waits on it, and a phone without it is left alone.
+    if charging
+        && described(phone, Kind::Aidl, CHARGING).is_some()
+        && let Ok(program) = behind(phone, "the charging service", CHARGING, |file| file.contains("micharge"))
+    {
+        let registers = besides(phone, program, CHARGING, alone);
+        start(&mut out, started(phone, program, Ready::Service(CHARGING.into()), registers));
+    }
+
+    // Xiaomi's secret keeper, on a phone that carries it: the kernel asks it
+    // to have the charger verified, and until it has, a charge stays at a
+    // fixed voltage however much the charger offers. It registers nothing, so
+    // nothing waits on it.
+    if verifying
+        && let Some(started) = secret(phone)
+    {
+        start(&mut out, started);
+    }
     Ok(out)
+}
+
+/// Xiaomi's secret keeper, as it is started, where the phone carries one: the
+/// program its scripts name, else the one the vendor partition has under that
+/// name and that no script of the phone's starts. None where the phone has
+/// neither, which leaves a phone without it charging as it always has.
+///
+/// It is run as root with nothing of init's but its path: it registers no
+/// service and waits on no property, so it is given no socket and no
+/// environment.
+fn secret(phone: &Phone) -> Option<Started> {
+    if let Ok(Some(program)) = named(phone, SECRET) {
+        return Some(started(phone, program, Ready::Nothing, Vec::new()));
+    }
+    let path = format!("{VENDOR_PROGRAMS}/{SECRET}");
+    Path::new(&path).is_file().then(|| {
+        Started::from(Service {
+            path: path.clone(),
+            args: Vec::new(),
+            libraries: libraries_of(&path, phone.bundle.as_deref()),
+            oneshot: false,
+            ready_property: None,
+            ready_service: None,
+            registers: Vec::new(),
+            ready_hardware_service: None,
+            when: None,
+            user: None,
+            groups: Vec::new(),
+            capabilities: Vec::new(),
+            optional: false,
+        })
+    })
 }
 
 /// The description that tells of the service `name`, where it is the one
@@ -261,7 +320,7 @@ pub fn programs(steps: &[Step]) -> Vec<&Started> {
 
 /// What starting the weaver takes: the driver of the chip its secure
 /// element is in, what it reaches the secure element through, and then the
-/// weaver itself, unless it is of a make the recovery does not start.
+/// weaver itself.
 fn weaver(phone: &Phone) -> Result<Vec<Step>> {
     let mut out = Vec::new();
     let program = behind(phone, "the weaver", WEAVER, |file| file.contains("weaver-service"))?;
@@ -295,9 +354,6 @@ fn weaver(phone: &Phone) -> Result<Vec<Step>> {
             }
             out.push(Step::ServeElements);
         }
-    }
-    if UNSTARTED.iter().any(|ending| file.ends_with(ending)) {
-        return Ok(out);
     }
     let mut weaver = started(phone, program, Ready::Service(WEAVER.into()), besides(phone, program, WEAVER, |_| false));
     weaver.anew = *through == Through::ElementService;
@@ -428,6 +484,7 @@ fn started(phone: &Phone, program: &Program, ready: Ready, registers: Vec<String
         user: program.user.clone(),
         groups: program.groups.clone(),
         capabilities: program.capabilities.clone().unwrap_or_default(),
+        optional: false,
     };
     Started { service, sockets: program.sockets.clone(), environment: program.environment.clone(), anew: false }
 }

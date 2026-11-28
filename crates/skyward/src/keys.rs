@@ -34,14 +34,14 @@ pub struct Found {
 /// `libraries` is where the libraries the phone's partitions were built
 /// against are opened, on a phone that carries them as a bundle of their
 /// own: each of its programs is given the folder among its own.
-pub fn found(slot: skyward_vab::Slot, libraries: Option<&Path>) -> Result<Found> {
+pub fn found(slot: skyward_vab::Slot, libraries: Option<&Path>, mode: skyward_ui::app::ChargeMode) -> Result<Found> {
     let mut phone = read(slot, libraries)?;
     let unnamed = naming::steps(&phone)?;
     if !unnamed.is_empty() {
         name(&unnamed)?;
         phone = read(slot, libraries)?;
     }
-    Ok(Found { described: phone.told_of(), steps: secure::steps(&phone) })
+    Ok(Found { described: phone.told_of(), steps: secure::steps(&phone, mode.charging_service(), mode.secret_keeper()) })
 }
 
 /// The phone as the partitions of the slot's installed system describe it,
@@ -120,10 +120,34 @@ fn drive(driver: &Driver, modules: &[PathBuf]) -> Result<()> {
 /// own services have registered and before the weaver that reaches its
 /// secure element through it starts. Each program names every folder its
 /// libraries are looked for in.
-pub fn start(steps: &[Step], modules: &[PathBuf]) -> Result<()> {
+pub fn start(steps: &[Step], mode: skyward_ui::app::ChargeMode, modules: &[PathBuf]) -> Result<usize> {
+    let mut started = 0;
     for step in steps {
         match step {
-            Step::Start(program) => crate::services::start(std::slice::from_ref(program.as_ref()), None)?,
+            Step::Start(program) => {
+                let settles = settles_the_charge(&program.service.path);
+                let wanted = if !settles {
+                    true
+                } else if program.service.path.contains("micharge") {
+                    mode.charging_service()
+                } else {
+                    mode.secret_keeper()
+                };
+                if settles {
+                    skyward_sys::kmsg(&format!(
+                        "{} settles how fast a charge may run, and the step {} names it: {wanted}",
+                        program.service.path,
+                        mode.name()
+                    ))?;
+                }
+                if !wanted {
+                    continue;
+                }
+                crate::services::start(std::slice::from_ref(program.as_ref()), None)?;
+                if settles {
+                    started += 1;
+                }
+            }
             Step::Drive(driver) => drive(driver, modules)?,
             Step::ServeElements => {
                 let readers = skyward_omapi::start()?;
@@ -131,8 +155,20 @@ pub fn start(steps: &[Step], modules: &[PathBuf]) -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(started)
 }
+
+/// Whether this program is one of the two that settle how fast a charge may
+/// run: Xiaomi's charging service, which passes the battery's own check on to
+/// the kernel, and its secret keeper, which has the charger verified. They
+/// are the only two the charge page's steps name, so they are the only two
+/// whose say the page needs.
+pub fn settles_the_charge(path: &str) -> bool {
+    path.contains("micharge") || path.ends_with(KEEPER_TAIL)
+}
+
+/// The tail of the secret keeper program's path.
+const KEEPER_TAIL: &str = concat!("/", "batterysecret");
 
 /// What `steps` are, a line each, as the `keys` command prints them.
 pub fn describe(steps: &[Step]) -> Vec<String> {

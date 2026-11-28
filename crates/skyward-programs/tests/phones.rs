@@ -80,6 +80,7 @@ fn program(path: &str, libraries: &[&str], user: &str, groups: &[&str]) -> Servi
         user: Some(user.into()),
         groups: strings(groups),
         capabilities: Vec::new(),
+        optional: false,
     }
 }
 
@@ -119,12 +120,10 @@ fn builds(codename: &str, partition: &str) -> Vec<String> {
 /// recovery asks, whichever build of the hardware the phone is: the odm
 /// partition's description is the one named after the phone where it has
 /// one, and the vendor partition's any of those it carries. A phone with a
-/// weaver starts what the weaver goes through before it; one whose weaver
-/// is NXP's has its secure element in its NFC controller and loads the
-/// controller's driver right before the secure element's own service, which
-/// opens the node the driver makes, but the weaver itself stays unstarted,
-/// as the recovery asks the applet directly instead; no other phone loads a
-/// driver.
+/// weaver starts what the weaver goes through before it, and one whose
+/// weaver is NXP's, whose secure element is in its NFC controller, loads
+/// the controller's driver right before the secure element's own service,
+/// which opens the node the driver makes; no other phone loads a driver.
 /// No service is told of as registered by two programs, all the phone
 /// describes reads back from the description written of it for the service
 /// directory, what the programs register among it, and every account a
@@ -146,7 +145,7 @@ fn every_phone_names_one_program_for_each_service() {
         for build in &vendor {
             let properties = [("ro.boot.hardware", "qcom"), ("ro.boot.product.vendor.sku", build.as_str()), ("ro.boot.product.hardware.sku", hardware.as_str())];
             let read = phone(codename, &properties);
-            let steps = secure::steps(&read).unwrap_or_else(|e| panic!("{codename}, as the build {build:?} of its hardware: {e:#}"));
+            let steps = secure::steps(&read, false, false).unwrap_or_else(|e| panic!("{codename}, as the build {build:?} of its hardware: {e:#}"));
             let told_of = read.told_of();
             let written = skyward_programs::description::offering(&told_of).unwrap_or_else(|e| panic!("{codename}, as the build {build:?} of its hardware: {e:#}"));
             let read_back: Vec<String> = skyward_programs::description::read(&written).unwrap().iter().map(|described| described.name()).collect();
@@ -167,15 +166,14 @@ fn every_phone_names_one_program_for_each_service() {
             assert!(weaver > 0 && (steps[weaver - 1].contains("secure_element") || steps[weaver - 1] == "(the secure element service)"), "{codename}: {steps:?}");
         }
         let drivers: Vec<(usize, &Driver)> = first.iter().enumerate().filter_map(|(at, step)| if let Step::Drive(driver) = step { Some((at, driver)) } else { None }).collect();
-        match drivers[..] {
-            [(at, driver)] => {
+        match steps.iter().any(|name| name.ends_with("weaver-service.nxp-qti")) {
+            true => {
+                let [(at, driver)] = drivers[..] else { panic!("{codename} loads one driver: {steps:?}") };
                 assert_eq!(*driver, Driver { module: "nxp-nci", node: "/dev/nq-nci" }, "{codename}");
-                assert!(steps[at + 1].contains("secure_element") || steps[at + 1] == "(the secure element service)", "{codename}: {steps:?}");
-                assert!(!steps.iter().any(|name| name.ends_with("weaver-service.nxp-qti")), "{codename} leaves NXP's weaver unstarted: {steps:?}");
+                assert!(steps[at + 1].contains("secure_element"), "{codename}: {steps:?}");
                 with_nxp_s_weaver.push(codename);
             }
-            [] => assert!(!steps.iter().any(|name| name.ends_with("weaver-service.nxp-qti")), "{codename} leaves NXP's weaver unstarted: {steps:?}"),
-            _ => panic!("{codename} loads one driver: {steps:?}"),
+            false => assert!(drivers.is_empty(), "{codename}: {steps:?}"),
         }
         let lists: Vec<String> = ["vendor/etc/passwd", "odm/etc/passwd", "vendor/etc/group", "odm/etc/group"].iter().map(|list| described(codename).join(list).to_string_lossy().into_owned()).collect();
         let known = skyward_sys::ueventd::accounts(&lists.iter().map(String::as_str).collect::<Vec<_>>());
@@ -205,7 +203,7 @@ fn every_phone_names_one_program_for_each_service() {
 /// for it and used its keys with.
 #[test]
 fn nezha_s_programs_are_found_as_they_were_started_on_the_phone() {
-    let steps = secure::steps(&phone("nezha", &[("ro.boot.hardware", "qcom"), ("ro.special_edition", "true")])).unwrap();
+    let steps = secure::steps(&phone("nezha", &[("ro.boot.hardware", "qcom"), ("ro.special_edition", "true")]), false, false).unwrap();
     let expected = [
         Started { service: listeners(), sockets: vec![socket("notify-topology", "drmrpc")], environment: Vec::new(), anew: false },
         Started {
@@ -240,7 +238,7 @@ fn nezha_s_programs_are_found_as_they_were_started_on_the_phone() {
 #[test]
 fn nezha_s_other_builds_reach_their_weaver_s_secure_element_through_the_secure_element_service() {
     for properties in [&[("ro.boot.hardware", "qcom")][..], &[("ro.boot.hardware", "qcom"), ("ro.special_edition", "false")][..]] {
-        let steps = secure::steps(&phone("nezha", properties)).unwrap();
+        let steps = secure::steps(&phone("nezha", properties), false, false).unwrap();
         assert_eq!(
             names(&steps),
             [
@@ -281,7 +279,7 @@ fn nezha_s_other_builds_reach_their_weaver_s_secure_element_through_the_secure_e
 #[test]
 fn ishtar_s_programs_are_found_as_they_were_started_on_the_phone_and_its_opener_with_them() {
     let properties = [("ro.boot.hardware", "qcom"), ("ro.boot.product.vendor.sku", "kalama"), ("ro.boot.product.hardware.sku", "ishtar")];
-    let steps = secure::steps(&phone("ishtar", &properties)).unwrap();
+    let steps = secure::steps(&phone("ishtar", &properties), false, false).unwrap();
     let expected = [
         Started { service: listeners(), sockets: vec![socket("notify-topology", "drmrpc")], environment: Vec::new(), anew: false },
         Started {
@@ -313,7 +311,7 @@ fn ishtar_s_programs_are_found_as_they_were_started_on_the_phone_and_its_opener_
 fn socrates_s_programs_are_the_13_ultra_s() {
     let found = |codename: &str| {
         let properties = [("ro.boot.hardware", "qcom"), ("ro.boot.product.vendor.sku", "kalama"), ("ro.boot.product.hardware.sku", codename)];
-        let steps = secure::steps(&phone(codename, &properties)).unwrap();
+        let steps = secure::steps(&phone(codename, &properties), false, false).unwrap();
         secure::programs(&steps).into_iter().cloned().collect::<Vec<Started>>()
     };
     assert_eq!(found("socrates"), found("ishtar"));
@@ -328,7 +326,7 @@ fn socrates_s_programs_are_the_13_ultra_s() {
 fn ishtar_s_programs_look_in_its_bundle_before_the_installed_system_s_folders() {
     let properties = [("ro.boot.hardware", "qcom"), ("ro.boot.product.vendor.sku", "kalama"), ("ro.boot.product.hardware.sku", "ishtar")];
     let bundle = "/apex/com.android.vndk.v33/lib64";
-    let steps = secure::steps(&with_bundle("ishtar", &properties, Some(Path::new(bundle)))).unwrap();
+    let steps = secure::steps(&with_bundle("ishtar", &properties, Some(Path::new(bundle))), false, false).unwrap();
     let found = secure::programs(&steps);
     let libraries = |path: &str| &found.iter().find(|s| s.service.path == path).unwrap_or_else(|| panic!("{path} is started")).service.libraries;
     assert_eq!(
@@ -344,7 +342,7 @@ fn ishtar_s_programs_look_in_its_bundle_before_the_installed_system_s_folders() 
 #[test]
 fn dada_s_weaver_goes_through_the_secure_element_service_to_the_element_s_own_service() {
     let properties = [("ro.boot.hardware", "qcom"), ("ro.boot.product.vendor.sku", "sun")];
-    let steps = secure::steps(&phone("dada", &properties)).unwrap();
+    let steps = secure::steps(&phone("dada", &properties), false, false).unwrap();
     assert_eq!(
         names(&steps),
         [
@@ -379,7 +377,7 @@ fn dada_s_weaver_goes_through_the_secure_element_service_to_the_element_s_own_se
 fn byron_s_secure_element_is_told_of_among_all_its_vendor_partition_registers() {
     for build in builds("byron", "vendor") {
         let properties = [("ro.boot.hardware", "qcom"), ("ro.boot.product.vendor.sku", build.as_str())];
-        let steps = secure::steps(&phone("byron", &properties)).unwrap();
+        let steps = secure::steps(&phone("byron", &properties), false, false).unwrap();
         let found = secure::programs(&steps);
         let element = found.iter().find(|s| s.service.path.ends_with("secure_element-service.qti")).expect("its secure element has a service of its own");
         assert_eq!(element.service.ready_service.as_deref(), Some("android.hardware.secure_element.ISecureElement/eSE1"));

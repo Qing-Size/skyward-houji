@@ -12,8 +12,8 @@ use skyward_systems::{Named, Other, Overview, Who};
 use skyward_ui::app::{
     Action, Adding, App, Asked, BackupAt, BackupEnd, BackupEntry, BackupJob, BackupRefusal, Choice, Clip, Damage, Data, DownloadEnd,
     DownloadJob, EraseStop, Field, FileKind, FileOp, FileRow, FileTask, FsAction, FsRow, Have, Held, Install, ItemEnd, JobEnd, Key, Keys,
-    MountFailure, MountRow, Part, PartKind, PartStop, Pick, Place, Region, Screen, SkywardEnd, SkywardJob, SkywardStage, Source, State,
-    SystemChoice, SystemsWork, TermEnd, Touch, UsbDrive, UsbLink, SCREEN_OFF, listed,
+    MountFailure, MountRow, Part, PartKind, PartStop, Pick, Place, Region, Screen, SkywardEnd, SkywardJob, SkywardStage, Source,
+    State, SystemChoice, SystemsWork, TermEnd, Tile, Touch, UsbDrive, UsbLink, SCREEN_OFF,
 };
 use skyward_ui::canvas::Drawn;
 use skyward_ui::widgets::{self, Bar, Bolt, Cap, Layer};
@@ -239,7 +239,7 @@ fn main() -> Result<()> {
             "204-flash-choosing-super-dark",
             true,
             Install::Choosing(Choice {
-                kind: ImageKind::Super { zstd: false },
+                kind: ImageKind::Super,
                 size: 9_663_676_416,
                 partitions: vec![FlashTarget { name: "super".into(), place: FlashPlace::Single }],
                 partition: 0,
@@ -437,7 +437,7 @@ fn main() -> Result<()> {
     let adding = |app: &mut App, name: &str, security: Security, field: Field, choosing: bool| {
         app.state.adding = Some(Adding { name: name.into(), security, field, choosing });
     };
-    let pages: [PageShot; 185] = [
+    let pages: [PageShot; 190] = [
         ("11-install-light-locked", Screen::Install, false, &|app| {
             app.state.data = Data::Locked { user: 0, keys: Keys::Digits, checking: false };
         }),
@@ -585,6 +585,40 @@ fn main() -> Result<()> {
             app.state.backup_job = job(true, Vec::new(), None, Some(BackupEnd::Refused(older)))
         }),
         ("49-advanced-light", Screen::Advanced, false, &|_| {}),
+        ("02b-home-light-charging", Screen::Home, false, &|app| {
+            app.state.charge = skyward_ui::app::ChargeNow {
+                now: Some(412),
+                most: Some(412),
+                protocol: Some("PD_PPS".into()),
+                rated: Some(120),
+                volts: Some(16_905_000),
+                amps: Some(2_470_000),
+            };
+        }),
+        ("49a-charge-plain-light", Screen::Charge, false, &|app| {
+            app.state.charge_mode = skyward_ui::app::ChargeMode::Plain;
+            app.state.thermal_limit = 45;
+        }),
+        ("49b-charge-fast-light", Screen::Charge, false, &|app| {
+            app.state.charge_mode = skyward_ui::app::ChargeMode::Fast;
+            app.state.thermal_limit = 45;
+        }),
+        ("49c-charge-fastest-light", Screen::Charge, false, &|app| {
+            app.state.charge_mode = skyward_ui::app::ChargeMode::Fastest;
+            app.state.thermal_limit = 45;
+        }),
+        ("49-charge-light", Screen::Charge, false, &|app| {
+            app.state.charge = skyward_ui::app::ChargeNow {
+                now: Some(278),
+                most: Some(412),
+                protocol: Some("PD_PPS".into()),
+                rated: Some(120),
+                volts: Some(16_905_000),
+                amps: Some(2_470_000),
+            };
+            app.state.charge_mode = skyward_ui::app::ChargeMode::Fastest;
+            app.state.thermal_limit = 45;
+        }),
         ("50-files-light", Screen::Files, false, &|app| app.set_files("/".into(), Ok(sample_root()), LISTED)),
         ("51-files-dark", Screen::Files, true, &|app| app.set_files("/".into(), Ok(sample_root()), LISTED)),
         ("52-file-info-light", Screen::FileInfo, false, &|app| app.state.file = sample_root().into_iter().find(|e| e.name == "init.environ.rc")),
@@ -901,12 +935,12 @@ fn main() -> Result<()> {
         ("56-time-zone-dark-chosen", Screen::TimeZone, true, &|app| {
             app.set_system_zone("Europe/Rome").expect("a zone the recovery carries");
             app.state.follow_system_zone = false;
-            app.state.time_zone = listed("Europe/London").expect("London is listed");
+            app.set_system_zone("Europe/London").expect("London is listed");
         }),
         ("56-time-zone-light-no-system", Screen::TimeZone, false, &|_| {}),
         ("56-time-zones-light-americas", Screen::TimeZones(Region::Americas), false, &|_| {}),
         ("56-time-zones-dark-europe-africa", Screen::TimeZones(Region::EuropeAfrica), true, &|app| {
-            app.state.time_zone = listed("Europe/London").expect("London is listed");
+            app.set_system_zone("Europe/London").expect("London is listed");
         }),
         ("56-time-zones-light-russia", Screen::TimeZones(Region::Russia), false, &|_| {}),
         ("56-time-zones-light-asia", Screen::TimeZones(Region::Asia), false, &|_| {}),
@@ -1015,7 +1049,12 @@ fn main() -> Result<()> {
             app.file_progress((0, 18_000), (0, 1));
             app.file_job_ended(JobEnd::Failed("make /sdcard/Download/skyward.log: Read-only file system (os error 30)".into()), 0);
         }),
-        ("85-decrypt-light-opening", Screen::Decrypt, false, &|app| app.state.data = Data::Opening),
+        ("85-decrypt-light-opening", Screen::Decrypt, false, &|app| {
+            app.state.data = Data::Opening;
+            // The ring a third of a turn in, and the bar a little under half
+            // its length, as the page shows them while it waits.
+            app.state.data_phase = 0.33;
+        }),
         ("86-decrypt-light-digits", Screen::Decrypt, false, &|app| {
             app.data_waiting(Some((0, Keys::Digits)));
             app.state.code = "123".into();
@@ -1067,7 +1106,7 @@ fn main() -> Result<()> {
     }
 
     // The panel mid-gesture, to set beside recordings of the same moves.
-    let moments: [Moment; 27] = [
+    let moments: &[Moment] = &[
         ("08-about-light", Screen::About, false, &|_, _| 2000),
         ("08-about-dark", Screen::About, true, &|_, _| 2000),
         ("08-about-light-later", Screen::About, false, &|_, _| 9000),
@@ -1159,8 +1198,70 @@ fn main() -> Result<()> {
             let keys = [Cap::Space, Cap::Show(Layer::Digits), Cap::Char('-'), Cap::Show(Layer::Letters), Cap::Char('x')];
             type_keys(app, f, &info, &keys, 300)
         }),
+        // The control centre, pulled down, with the two capsules at
+        // different levels.
+        ("190-shade-light", Screen::Home, false, &|app, f| {
+            app.state.brightness = 0.62;
+            app.state.vibration = 0.28;
+            let x = 700.0;
+            app.touch(Touch::Down(x, 8.0), f, 100);
+            app.touch(Touch::Move(x, 900.0), f, 200);
+            app.touch(Touch::Move(x, 2000.0), f, 300);
+            app.touch(Touch::Up, f, 400);
+            900
+        }),
+        ("191-shade-dark", Screen::Home, true, &|app, f| {
+            app.state.brightness = 0.62;
+            app.state.vibration = 0.28;
+            let x = 700.0;
+            app.touch(Touch::Down(x, 8.0), f, 100);
+            app.touch(Touch::Move(x, 900.0), f, 200);
+            app.touch(Touch::Move(x, 2000.0), f, 300);
+            app.touch(Touch::Up, f, 400);
+            900
+        }),
+        // 控制中心只留四枚：面板照着收，滑条与状态卡还在原处。
+        ("192-shade-four-tiles", Screen::Home, false, &|app, f| {
+            app.state.tiles = vec![Tile::Record, Tile::Screenshot, Tile::Reboot, Tile::Settings];
+            app.state.brightness = 0.62;
+            app.state.vibration = 0.28;
+            let x = 700.0;
+            app.touch(Touch::Down(x, 8.0), f, 100);
+            app.touch(Touch::Move(x, 900.0), f, 200);
+            app.touch(Touch::Move(x, 2000.0), f, 300);
+            app.touch(Touch::Up, f, 400);
+            900
+        }),
+        // 录屏时拉下控制中心：计时胶囊得让到面板下面，不压右上角那支笔。
+        ("195-shade-recording", Screen::Home, false, &|app, f| {
+            app.state.date = "11月22日 周六".into();
+            app.state.record.on = true;
+            app.state.record.elapsed = "1:23".into();
+            app.state.brightness = 0.62;
+            app.state.vibration = 0.28;
+            let x = 700.0;
+            app.touch(Touch::Down(x, 8.0), f, 100);
+            app.touch(Touch::Move(x, 900.0), f, 200);
+            app.touch(Touch::Move(x, 2000.0), f, 300);
+            app.touch(Touch::Up, f, 400);
+            900
+        }),
+        // 长按磁贴翻成的编辑态：圆钮右上角带叉，底下列出还没摆的。
+        ("194-shade-editing", Screen::Home, false, &|app, f| {
+            app.state.tiles = vec![Tile::Wlan, Tile::Vibrate, Tile::Record, Tile::Settings];
+            app.state.brightness = 0.62;
+            app.state.vibration = 0.28;
+            let x = 700.0;
+            app.touch(Touch::Down(x, 8.0), f, 100);
+            app.touch(Touch::Move(x, 900.0), f, 200);
+            app.touch(Touch::Move(x, 2000.0), f, 300);
+            app.touch(Touch::Up, f, 400);
+            app.shade_editing = true;
+            app.refresh();
+            500
+        }),
     ];
-    for (name, screen, dark, act) in moments {
+    for &(name, screen, dark, act) in moments {
         let mut app = opened(screen, w, h, ppd);
         app.set_screen_corners(cfg.display.corner_radius as f32);
         app.state.dark = dark;
@@ -1174,6 +1275,323 @@ fn main() -> Result<()> {
         app.tick(now);
         let mut c = Canvas::new(w, h);
         app.compose(&mut c, &fonts, &info, CLOCK, now);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+
+    // The account's row over the phone's, once the partition it is kept on is
+    // open: a picture cut to a circle, and the name the phone gives itself.
+    // The account's own picture, read from the phone when it is there.
+    let real = skyward_ui::avatar::Avatar::read(
+        std::path::Path::new("/storage/emulated/0/Download/mi-avatar.bin"),
+        (34.0 * ppd).round() as u32,
+    )
+    .ok();
+    // The lock typed in on the decrypt page, and the risk of keeping it put
+    // before the switch that does.
+    for (name, dark, risk) in [("232-decrypt-typed-light", false, false), ("233-decrypt-risk-light", false, true)] {
+        let mut app = App::new(Screen::Decrypt, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = dark;
+        app.state.data = Data::Locked { user: 0, keys: Keys::Letters, checking: false };
+        app.state.code = "19930613".into();
+        if risk {
+            app.state.asking_remember = true;
+        }
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+    // The decrypt page once the partition is open: the kept lock is shown
+    // there, and dropped from there.
+    for (name, dark, kept) in [
+        ("234-decrypt-open-kept-light", false, true),
+        ("235-decrypt-open-not-kept-light", false, false),
+    ] {
+        let mut app = App::new(Screen::Decrypt, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = dark;
+        app.state.data = Data::Open;
+        app.state.remember = kept;
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+    for (name, dark) in [("230-keep-lock-risk-light", false), ("231-keep-lock-risk-dark", true)] {
+        let mut app = App::new(Screen::Settings, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = dark;
+        app.state.asking_remember = true;
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+    for (name, dark) in [("212-account-real-light", false), ("213-account-real-dark", true)] {
+        let mut app = App::new(Screen::Home, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = dark;
+        app.state.device_name = Some("Mari0us".into());
+        app.state.avatar = real.clone();
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+    for (name, dark) in [("210-account-light", false), ("211-account-dark", true)] {
+        let mut app = App::new(Screen::Home, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = dark;
+        app.state.device_name = Some("Mari0us".into());
+        app.state.avatar = Some(picture(px_of(&app)));
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+
+
+    // is put in place before the page is drawn, which the moments' loop cannot
+    // do.
+    // Choosing several entries: ticks beside the chosen, and the bar at the
+    // foot carrying what can be done with them.
+    for (name, dark) in [("208-choosing-light", false), ("209-choosing-dark", true)] {
+        let mut app = App::new(Screen::Files, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = dark;
+        app.set_files("/sdcard".into(), Ok(sample_root()), LISTED);
+        app.state.choosing = true;
+        app.state.chosen.insert("apex".into());
+        app.state.chosen.insert("dev".into());
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+    for (name, dark, asking) in [
+        ("205-delete-card-light", false, true),
+        ("206-delete-card-dark", true, true),
+        ("207-fileinfo-light", false, false),
+    ] {
+        let mut app = App::new(Screen::FileInfo, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = dark;
+        // 底部弹出的这张卡上面是当前文件夹的样子，正在操作的那一行亮着。
+        app.state.files.path = "/sdcard".into();
+        app.state.files.entries = Ok(sample_root());
+        app.state.files.listed = LISTED;
+        app.state.file = Some(folder("DCIM", 12, 0));
+        app.state.asking_delete = asking;
+        app.state.confirm = 0.35;
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+
+    // 数据应用：图标对齐用这张看。
+    {
+        let mut app = App::new(Screen::DataApps, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = false;
+        let make = |pkg: &str, label: &str| skyward_ui::app::dataapp::DataApp {
+            package: pkg.into(), dir: format!("/data/app/~~x/{pkg}-y"), label: label.into(),
+            version: String::new(), installed: LISTED - 3600, updated: LISTED - 60,
+            size: 12_345_678, icon: Vec::new(), system: false,
+        };
+        app.state.apps = Some(Ok(vec![
+            make("com.example.alpha", "Alpha 测试应用"),
+            make("com.example.beta", "Beta"),
+            make("com.example.gamma", "Gamma 很长的名字看看会不会被裁掉会不会再长一点点"),
+            make("com.example.delta", "招商银行"),
+        ]));
+        // 假图标：实心圆角方块，用来量位置。
+        let square = |r: u8, g: u8, b: u8| -> (u32, u32, Vec<u8>) {
+            let side = 96u32;
+            let mut data = vec![0u8; (side * side * 4) as usize];
+            for y in 0..side {
+                for x in 0..side {
+                    let corner = (x < 12 || x > side - 13) && (y < 12 || y > side - 13);
+                    let to = ((y * side + x) * 4) as usize;
+                    let a = if corner { 0 } else { 255 };
+                    data[to..to + 4].copy_from_slice(&[r, g, b, a]);
+                }
+            }
+            (side, side, data)
+        };
+        app.state.app_icons = vec![square(40, 130, 220), square(220, 80, 80), square(60, 190, 120)];
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join("214-data-apps-light.png");
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+
+    // 模块很多时：长页，能滚。
+    {
+        let mut app = App::new(Screen::Modules, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = true;
+        let mods: Vec<skyward_ui::app::ModuleRow> = (0..14)
+            .map(|k| skyward_ui::app::ModuleRow {
+                id: format!("module_{k}"),
+                name: format!("模块 {k}"),
+                note: format!("v1.{k} · someone"),
+                about: String::new(),
+                enabled: k % 3 != 0,
+                removing: false,
+                pending: k % 7 == 0,
+            })
+            .collect();
+        app.state.modules = Some(Ok(mods));
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join("216-modules-long.png");
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+
+    // Root 页与 KernelSU 页：在线安装入口、图标与写入卡。
+    for (name, screen, dark, busy) in [
+        ("230-root-light", Screen::Root, false, false),
+        ("232-root-dark", Screen::Root, true, false),
+        ("231-kernelsu-light", Screen::KernelSu, false, false),
+        // 正在下载的那一屏：卡停在底，写着百分比与速度。
+        ("233-root-downloading", Screen::Root, false, true),
+    ] {
+        let mut app = App::new(screen, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = dark;
+        app.state.auto_root = skyward_ui::app::AutoRoot::KernelSu;
+        app.state.latest_kernelsu = Some("v3.3.2".into());
+        app.state.latest_magisk = Some("v29.1".into());
+        let kmis: Vec<skyward_ui::app::KmiRow> = ["android12-5.10", "android13-5.10", "android13-5.15", "android14-5.15", "android14-6.1", "android15-6.6", "android16-6.12", "android17-6.18"]
+            .iter()
+            .map(|id| skyward_ui::app::KmiRow { id: (*id).to_string(), android: 17, kernel: "6.18".into(), target: "init_boot".into() })
+            .collect();
+        app.state.kernel_su = Some(Ok(skyward_ui::app::KernelSuStatus {
+            installed: true,
+            has_backup: false,
+            backup_target: None,
+            version: Some("3.3.1-56-gcfc60f8d (uapi: 6)".into()),
+            unlocked: true,
+            slot: Some("B".into()),
+            default: Some(7),
+            kmis,
+        }));
+        if busy {
+            app.state.kernel_su_job = Some(skyward_ui::app::KernelSuJob {
+                stage: skyward_ui::app::KernelSuStage::Preparing,
+                outcome: None,
+                fetched: None,
+                fallback: None,
+            });
+            app.state.root_bytes = Some((3_120_000, Some(6_402_736), 214_000));
+            app.state.confirm = 1.0;
+        }
+        app.state.magisk = Some(Ok(skyward_ui::app::MagiskStatus {
+            installed: false,
+            has_backup: false,
+            backup_target: None,
+            version: None,
+            unlocked: true,
+            slot: Some("B".into()),
+            target: "init_boot_b".into(),
+        }));
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+
+    // 应用管理满一页：翻页按钮在标题行，最后一行不被裁。
+    {
+        let mut app = App::new(Screen::DataApps, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = false;
+        app.state.app_page = 1;
+        let names = [
+            "Hyper 隐私卫士", "Always-on display and Lock screen", "System UI Plug-in", "OpenRung",
+            "Eta β", "Xiaomi Hyper XiaoAi Keyboard", "海尔智家", "rednote", "飞鸟听书", "招商银行",
+        ];
+        let apps: Vec<skyward_ui::app::dataapp::DataApp> = (0..25)
+            .map(|k| {
+                let label = names[k % names.len()].to_string();
+                skyward_ui::app::dataapp::DataApp {
+                    package: format!("com.example.app{k}"),
+                    dir: format!("/data/app/~~x/com.example.app{k}-y"),
+                    label,
+                    version: String::new(),
+                    installed: LISTED - k as i64 * 60,
+                    updated: LISTED,
+                    size: 1 << 20,
+                    icon: Vec::new(),
+                    system: k >= 22,
+                }
+            })
+            .collect();
+        app.state.apps = Some(Ok(apps));
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join("215-data-apps-paged.png");
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+
+    // 模块管理：读到的模块，开着的、关着的各一条。
+    for (name, dark) in [("212-modules-light", false), ("213-modules-dark", true)] {
+        let mut app = App::new(Screen::Modules, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = dark;
+        app.state.modules = Some(Ok(vec![
+            skyward_ui::app::ModuleRow { id: "zygisk_lsposed".into(), name: "LSPosed".into(),
+                note: "v1.9.2 · LSPosed Developers".into(), about: "A Riru module trying to provide an ART hooking framework".into(),
+                enabled: true, removing: false, pending: false },
+            skyward_ui::app::ModuleRow { id: "busybox".into(), name: "BusyBox".into(),
+                note: "1.36.1 · osm0sis".into(), about: "BusyBox for Android".into(), enabled: true, removing: false, pending: false },
+            skyward_ui::app::ModuleRow { id: "old_module".into(), name: "Kernel tweaks".into(),
+                note: "v0.3".into(), about: String::new(), enabled: false, removing: false, pending: true },
+        ]));
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
+        let path = out.join(format!("{name}.png"));
+        write_png(&path, &c)?;
+        println!("wrote {}", path.display());
+    }
+
+    // 复制/移动先问一句「到哪儿去」。
+    for (name, dark) in [("210-place-light", false), ("211-place-dark", true)] {
+        let mut app = App::new(Screen::FileInfo, w, h, ppd);
+        app.state.lang = lang;
+        app.state.dark = dark;
+        app.state.file = Some(file("a.zip", 1024 * 1024 * 12, LISTED));
+        app.state.place_ask = Some(skyward_ui::app::FileOp::Copy);
+        app.set_screen_corners(cfg.display.corner_radius as f32);
+        let mut c = Canvas::new(w, h);
+        app.compose(&mut c, &fonts, &info, CLOCK, 0);
         let path = out.join(format!("{name}.png"));
         write_png(&path, &c)?;
         println!("wrote {}", path.display());
@@ -1358,6 +1776,34 @@ fn file(name: &str, size: u64, modified: i64) -> FileRow {
 
 /// Part of the root folder of a Xiaomi 13 Ultra, as `ls -la /` lists it,
 /// in the file manager's order.
+/// A stand-in picture for the pages that show one: a blue field with a lighter
+/// disc in it, cut to a circle as the phone's own picture is.
+fn picture(size: u32) -> skyward_ui::avatar::Avatar {
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+    let radius = size as f32 / 2.0;
+    for y in 0..size {
+        for x in 0..size {
+            let (dx, dy) = (x as f32 + 0.5 - radius, y as f32 + 0.5 - radius);
+            if dx * dx + dy * dy > radius * radius {
+                continue;
+            }
+            let at = ((y * size + x) * 4) as usize;
+            let inner = dx * dx + dy * dy < (radius * 0.55) * (radius * 0.55);
+            let (r, g, b) = if inner { (255, 255, 255) } else { (64, 120, 220) };
+            rgba[at] = r;
+            rgba[at + 1] = g;
+            rgba[at + 2] = b;
+            rgba[at + 3] = 255;
+        }
+    }
+    skyward_ui::avatar::Avatar { size, rgba }
+}
+
+fn px_of(app: &App) -> u32 {
+    // `avatar` is already pixels, the theme having taken the density in.
+    app.theme().m.avatar.round() as u32
+}
+
 fn sample_root() -> Vec<FileRow> {
     let made = RAMDISK_TIME;
     vec![
@@ -1527,8 +1973,15 @@ fn online(app: &mut App) {
 /// with its zip for the 17 Ultra.
 fn skyward_newest() -> Newest {
     Newest {
-        version: "0.1.4".into(),
+        version: "0.3.7".into(),
         newer: true,
+        // What the release says of itself, cut to what fits this screen.
+        notes: vec![
+            "新增 U 盘文件管理：文件管理页顶部与「内部存储」并排切换，可浏览 U 盘全部文件".into(),
+            "手机与 U 盘互传：长按文件「复制/剪切到 U 盘…」，选好目录后点「复制到此处」落地；反向同样".into(),
+            "记住解锁密码改为在解密页开启，会弹出风险警示".into(),
+            "未开启记住密码时开机直接显示输入密码页；自动解密完成后直接进入首页".into(),
+        ],
         build: Some(Build {
             name: "skyward-v0.1.4-nezha-OS4.0.4.0.XPACNXM.zip".into(),
             url: "https://api.github.com/repos/kirklin/skyward/releases/assets/719751747".into(),
@@ -1614,6 +2067,8 @@ fn nezha(cfg: &DeviceConfig) -> DeviceInfo {
             design: Some(6_800_000),
             full: Some(6_543_000),
             voltage: Some(4_442_000),
+            // What a recovery's own charging draws, as the node signs it.
+            current: Some(-1_100_000),
             // The recovery has no fast charging handshake with the charger.
             quick: false,
             plugged: true,

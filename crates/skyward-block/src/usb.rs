@@ -121,6 +121,43 @@ fn present<T>(r: std::io::Result<T>) -> std::io::Result<Option<T>> {
     }
 }
 
+/// Show every partition of `drive` the kernel reads, each at `base` under its
+/// own name: a drive with two of them shows both, one under `sdg1` and the
+/// other under `sdg2`, rather than the first one found hiding the rest. Gives
+/// the ones shown, with their filesystems.
+pub fn mount_all(drive: &Drive, base: &Path) -> Result<Vec<(String, &'static str)>> {
+    fs::create_dir_all(base).with_context(|| format!("create {}", base.display()))?;
+    let mut shown = Vec::new();
+    let mut tried = Vec::new();
+    for name in drive.candidates() {
+        let at = base.join(name);
+        fs::create_dir_all(&at).with_context(|| format!("create {}", at.display()))?;
+        let device = Path::new(DEV_BLOCK).join(name);
+        let mut mounted = false;
+        for (filesystem, own) in FILESYSTEMS {
+            // Read and written, as in `mount`: a file on the phone is copied
+            // onto the drive from the file manager.
+            let options: Vec<String> = ["rw", "nosuid", "nodev", own].map(str::to_string).into();
+            match mount::mount(&device, &at, filesystem, &options) {
+                Ok(()) => {
+                    shown.push((name.to_string(), filesystem));
+                    mounted = true;
+                    break;
+                }
+                Err(e) => tried.push(format!("{name} as {filesystem}: {}", e.root_cause())),
+            }
+        }
+        // A division nothing reads leaves no empty folder standing in the list.
+        if !mounted {
+            let _ = fs::remove_dir(&at);
+        }
+    }
+    if shown.is_empty() {
+        bail!("{} holds no filesystem the kernel reads: {}", drive.disk, tried.join("; "));
+    }
+    Ok(shown)
+}
+
 /// Show `drive` read only at `at`: the first of its partitions, or its
 /// disk, that holds a filesystem the kernel reads. Gives the partition and
 /// the filesystem shown.
@@ -130,7 +167,10 @@ pub fn mount(drive: &Drive, at: &Path) -> Result<(String, &'static str)> {
     for name in drive.candidates() {
         let device = Path::new(DEV_BLOCK).join(name);
         for (filesystem, own) in FILESYSTEMS {
-            let options: Vec<String> = ["ro", "nosuid", "nodev", "noexec", own].map(str::to_string).into();
+            // Read and written: a file on the phone is copied onto the drive
+            // from the file manager, and a drive mounted read-only would turn
+            // every copy down.
+            let options: Vec<String> = ["rw", "nosuid", "nodev", own].map(str::to_string).into();
             match mount::mount(&device, at, filesystem, &options) {
                 Ok(()) => return Ok((name.to_string(), filesystem)),
                 Err(e) => tried.push(format!("{name} as {filesystem}: {}", e.root_cause())),

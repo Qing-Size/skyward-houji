@@ -3,12 +3,27 @@
 //! beside it while file transfer is on.
 
 use crate::{prop, set_prop, wait_prop};
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 static MTP: AtomicBool = AtomicBool::new(false);
+
+/// The state of the port's gadget controller, where the phone has one.
+///
+/// The controller goes away while a dual-role port serves an OTG peripheral: a
+/// drive plugged into the phone takes the port for itself and the gadget is
+/// unregistered. That is nothing attached, not an error.
+pub fn gadget_state(controllers: &std::path::Path, controller: Option<&str>) -> Result<Option<String>> {
+    let Some(controller) = controller.filter(|name| !name.is_empty()) else { return Ok(None) };
+    let path = controllers.join(controller).join("state");
+    match std::fs::read_to_string(&path) {
+        Ok(state) => Ok(Some(state.trim().to_string())),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ENODEV | libc::ENXIO)) => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+    }
+}
 
 /// What the port offers while nothing else has it.
 pub fn resting() -> &'static str {

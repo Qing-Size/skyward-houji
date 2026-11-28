@@ -77,6 +77,11 @@ pub fn hardware_address(interface: &str) -> Result<[u8; 6]> {
 }
 
 /// Bring the interface up, or take it down.
+pub fn exists(interface: &str) -> bool {
+    std::path::Path::new("/sys/class/net").join(interface).exists()
+}
+
+/// Bring the interface up, or take it down.
 pub fn set_up(interface: &str, up: bool) -> Result<()> {
     let fd = socket()?;
     let mut r = request(interface)?;

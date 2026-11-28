@@ -5,7 +5,11 @@ use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
 
 /// Where GitHub answers which release of Skyward is the newest.
-pub const LATEST: &str = "https://api.github.com/repos/kirklin/skyward/releases/latest";
+/// Our own releases, not upstream's: upstream's newest is ahead of this fork
+/// in its numbering and carries builds this phone does not run, and the page
+/// offered it as the newest. Our zips are named `skyward-v<tag>-pudding-…`, so
+/// the codename match below finds them.
+pub const LATEST: &str = "https://api.github.com/repos/mariusarva/skyward-pudding/releases/latest";
 
 /// The version of GitHub's API the answer is read as.
 const API_VERSION: &str = "2022-11-28";
@@ -19,6 +23,9 @@ pub struct Newest {
     pub newer: bool,
     /// Its zip for the phone; none when it has none.
     pub build: Option<Build>,
+    /// What the release says it changed, as the few lines worth reading on the
+    /// phone's own screen: the release's words cut down, not all of them.
+    pub notes: Vec<String>,
 }
 
 /// A phone's zip in a release, which holds Skyward's image for the phone.
@@ -37,12 +44,35 @@ pub struct Build {
     pub sha256: String,
 }
 
+/// Mirror prefixes that hand a github.com file over themselves. A build's zip
+/// is a release asset, so these pass the whole link through; a mirror that
+/// cannot reach it is dropped by measuring before the download starts.
+const MIRRORS: [&str; 8] = [
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+    "https://gh.llkk.cc/",
+    "https://gh.zwy.one/",
+    "https://github.moeyy.xyz/",
+    "https://ghproxy.homeboyc.cn/",
+    "https://cdn.crashmc.com/",
+];
+
+/// 能替 github.com 取文件的镜像前缀，供别的下载路径共用。
+pub fn mirrors() -> &'static [&'static str] {
+    &MIRRORS
+}
+
 impl Build {
     /// Where to download the zip from, in the order to try: the file's own
     /// short-lived address, where GitHub's API gave one, then the release's
-    /// link on github.com, which some networks do not reach.
+    /// link on github.com, then the mirrors that pass that link through,
+    /// which some networks reach where github.com itself is not.
     pub fn sources(&self, located: Option<String>) -> Vec<String> {
-        located.into_iter().chain([self.link.clone()]).collect()
+        let mut out: Vec<String> = located.into_iter().collect();
+        out.push(self.link.clone());
+        out.extend(MIRRORS.iter().map(|m| format!("{m}{}", self.link)));
+        out
     }
 }
 
@@ -50,6 +80,9 @@ impl Build {
 struct Release {
     tag_name: String,
     assets: Vec<Asset>,
+    /// What the release says of itself, as it was written.
+    #[serde(default)]
+    body: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -77,7 +110,11 @@ pub fn newest(answer: &str, codename: &str, running: &str) -> Result<Newest> {
     let tag = release.tag_name;
     let version = tag.strip_prefix('v').with_context(|| format!("the newest release is tagged {tag}, which is not v and a version"))?;
     let newest = semver::Version::parse(version).with_context(|| format!("the newest release is tagged {tag}"))?;
-    let this = semver::Version::parse(running).with_context(|| format!("this build's version is {running}"))?;
+    // A build may name itself with the release's `v` in front, as a tag has it:
+    // the version behind it is what is compared (2026-11-15, a build made with
+    // SKYWARD_RELEASE=v0.3.1 could not ask GitHub at all).
+    let this_version = running.strip_prefix('v').unwrap_or(running);
+    let this = semver::Version::parse(this_version).with_context(|| format!("this build's version is {running}"))?;
     // Each zip is named skyward-, the tag, the phone's codename, and the
     // stock build the image is made on.
     let start = format!("skyward-{tag}-{codename}-");
@@ -89,7 +126,81 @@ pub fn newest(answer: &str, codename: &str, running: &str) -> Result<Newest> {
             Some(Build { sha256: sha256.to_lowercase(), name: a.name, url: a.url, link: a.browser_download_url, size: a.size })
         }
     };
-    Ok(Newest { version: version.to_string(), newer: newest > this, build })
+    Ok(Newest { version: version.to_string(), newer: newest > this, build, notes: brief(release.body.as_deref()) })
+}
+
+/// The few lines of a release's own words worth showing on a phone's screen:
+/// the bullet points written before the first heading, which are the ones
+/// meant for here, or the whole of it where it has none.
+fn brief(body: Option<&str>) -> Vec<String> {
+    let Some(body) = body else { return Vec::new() };
+    let head = match body.find("\n## ") {
+        Some(at) => &body[..at],
+        None => body,
+    };
+    let lines = both(head, body);
+    lines
+}
+
+/// The points written at the head of `head`, or those of `body` where the head
+/// says none.
+fn both<'a>(head: &'a str, body: &'a str) -> Vec<String> {
+    let from_head = points(head);
+    if from_head.is_empty() { points(body) } else { from_head }
+}
+
+/// The bullet points of `text`, their marks taken off, each cut to a length
+/// that reads in a line or two, and only the first handful of them.
+fn points(text: &str) -> Vec<String> {
+    const MOST: usize = 6;
+    const LONGEST: usize = 64;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        // Bullets only: the headings and the prose around them do not fit. A
+        // line of bold words is a heading, and `**` is not a bullet's mark.
+        let rest = match line.strip_prefix("**") {
+            Some(_) => continue,
+            None => match line.strip_prefix(['-', '*', '·', '•']) {
+                Some(rest) => rest,
+                None => continue,
+            },
+        };
+        let plain = plain_words(rest);
+        if plain.is_empty() {
+            continue;
+        }
+        let cut = match plain.chars().count() > LONGEST {
+            true => {
+                let mut short: String = plain.chars().take(LONGEST).collect();
+                short.push('…');
+                short
+            }
+            false => plain,
+        };
+        out.push(cut);
+        if out.len() == MOST {
+            break;
+        }
+    }
+    out
+}
+
+/// `text` with the marks a release's words are written in taken off: bold and
+/// italic stars, code ticks, and links kept by their own words.
+fn plain_words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('[') {
+        out.push_str(&rest[..at]);
+        let Some(close) = rest[at..].find(']') else { break };
+        let Some(after) = rest[at + close..].strip_prefix("](") else { break };
+        let Some(end) = after.find(')') else { break };
+        out.push_str(&rest[at + 1..at + close]);
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out.chars().filter(|c| !matches!(c, '*' | '`' | '#')).collect::<String>().trim().to_string()
 }
 
 /// Ask GitHub for Skyward's newest release, and its zip for the phone
@@ -144,6 +255,36 @@ fn refusal(status: ureq::http::StatusCode, body: &str) -> String {
 }
 
 #[cfg(test)]
+mod brief_tests {
+    use super::brief;
+
+    #[test]
+    fn a_release_is_cut_to_the_few_lines_that_fit_a_phone() {
+        let body = "## 新功能\n\n**U 盘文件管理**\n· 文件管理页顶部与「内部存储」并排显示「U 盘」，点一下切换，可浏览全部文件。\n· 高级页也有「U 盘管理」入口。\n· 第三条要点。\n· 第四条要点。\n· 第五条要点。\n· 第六条要点。\n· 第七条应被略过。\n\n## 修复\n· 修复项。\n";
+        let notes = brief(Some(body));
+        assert_eq!(notes.len(), 6, "six at most: {notes:?}");
+        assert!(notes[0].starts_with("文件管理页顶部"), "marks off: {notes:?}");
+        assert!(!notes.iter().any(|n| n.contains("第七条")), "the rest is left out");
+        assert!(!notes.iter().any(|n| n.contains('*')), "no stars: {notes:?}");
+    }
+
+    #[test]
+    fn a_line_too_long_for_the_screen_is_cut_short() {
+        let long = "· ".to_string() + &"字".repeat(200);
+        let notes = brief(Some(&long));
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].chars().count() <= 65, "cut to a line: {}", notes[0].chars().count());
+        assert!(notes[0].ends_with('…'));
+    }
+
+    #[test]
+    fn a_release_with_nothing_to_say_gives_nothing() {
+        assert!(brief(None).is_empty());
+        assert!(brief(Some("## 新功能\n\n**只有标题**\n")).is_empty());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -173,8 +314,13 @@ mod tests {
     fn a_zip_is_downloaded_from_where_github_sends_it_then_from_its_link() {
         let build = newest(ANSWERED_013, "ishtar", "0.1.2").unwrap().build.unwrap();
         let link = "https://github.com/kirklin/skyward/releases/download/v0.1.3/skyward-v0.1.3-ishtar-OS3.0.308.0.WMACNXM.zip";
-        assert_eq!(build.sources(Some("https://release-assets.githubusercontent.com/a?sig=1".into())), ["https://release-assets.githubusercontent.com/a?sig=1", link]);
-        assert_eq!(build.sources(None), [link], "where GitHub's API gave no address");
+        let sources = build.sources(Some("https://release-assets.githubusercontent.com/a?sig=1".into()));
+        assert_eq!(sources[0], "https://release-assets.githubusercontent.com/a?sig=1");
+        assert_eq!(sources[1], link, "the link on github.com comes after the file's own address");
+        assert!(sources.iter().any(|s| s == &format!("https://ghfast.top/{link}")), "the mirrors hand the link over themselves");
+        let sources = build.sources(None);
+        assert_eq!(sources[0], link, "where GitHub's API gave no address, the link comes first");
+        assert!(sources.len() > 1, "the mirrors are tried after it");
     }
 
     /// A server on this computer that answers one request with `answer`,

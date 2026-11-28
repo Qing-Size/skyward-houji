@@ -5,14 +5,25 @@
 use skyward_config::Strength;
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-/// The rate a made click's samples are played at, the lowest the driver
-/// takes: some fifty samples to each swing of the motor.
-pub(crate) const RATE: u32 = 8000;
+/// The rate a made click's samples are played at. It has to hold many samples
+/// to each swing of the motor, or the wave given to it is no wave at all: at
+/// 8000 a motor swinging at 1780 Hz got four and a half samples a swing, and
+/// what came out was a rasping buzz at a quarter of the strength it should
+/// have been (2026-11-17).
+pub(crate) const RATE: u32 = 24000;
 
-/// A made click: swings of the motor at its resonant frequency that drive
-/// it, then swings turned over that stop it, so that it does not ring on.
-const DRIVE_SWINGS: f32 = 2.0;
-const BRAKE_SWINGS: f32 = 1.5;
+/// How long a made click rings for: long enough to be felt, short enough to
+/// be a tap. It is counted in time rather than in swings, so that a motor
+/// swinging slowly gets the same tap as a fast one -- two swings of a motor
+/// at 1780 Hz came to two milliseconds, which is below what a finger notices.
+///
+/// 45 ms was felt but rang on into a rasping buzz: the motor is driven at its
+/// resonant frequency, and driven on past a certain point its swing loses the
+/// wave and comes out as noise (2026-11-17). 22 ms is felt, and is a tap.
+const CLICK_MS: f32 = 22.0;
+/// The share of the click the motor is driven through, the rest being the
+/// swings turned over that stop it.
+const DRIVE_SHARE: f32 = 0.6;
 /// The ticks of the screen going off by the power key, as the phone's own
 /// system plays them on the 17 Ultra, whose motor swings at [`TICKS_HZ`]:
 /// two crisp ticks, the second lighter, each six half-swings at about one
@@ -49,8 +60,8 @@ pub(crate) fn scaled(samples: &[i8], share: f32) -> Vec<i8> {
 /// A click's samples at [`RATE`] for a motor that swings at `hz`: whole
 /// swings that drive it, then swings turned over that stop it.
 pub(crate) fn made(hz: f32) -> Vec<i8> {
-    let at = |swings: f32| (swings * RATE as f32 / hz).round() as usize;
-    let (drive, all) = (at(DRIVE_SWINGS), at(DRIVE_SWINGS + BRAKE_SWINGS));
+    let all = (CLICK_MS / 1000.0 * RATE as f32).round() as usize;
+    let drive = (all as f32 * DRIVE_SHARE).round() as usize;
     (0..all)
         .map(|i| {
             let wave = (TAU * hz * i as f32 / RATE as f32).sin() * f32::from(i8::MAX);

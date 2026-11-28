@@ -20,51 +20,27 @@ pub fn source_dir(source: &str) -> Result<PathBuf> {
 }
 
 /// Load `names` (module names without `.ko`) with their dependencies. Each
-/// comes from the first of `dirs` that holds it; a module the kernel already
-/// has counts as loaded. Returns the files loaded, dependencies first.
-///
-/// A driver and what it depends on need not live in the same place: on a
-/// phone like the 14 the WLAN driver sits in vendor_dlkm while cfg80211 and
-/// rfkill are the kernel's own in system_dlkm, so every directory's
-/// modules.dep is read into one graph and each file is looked for in all of
-/// them. Loading a leaf module without its dependencies makes its
-/// finit_module fail with unknown symbols.
+/// comes from the first of `dirs` that holds it, and its dependencies from
+/// that directory's modules.dep; a module the kernel already has counts as
+/// loaded. Returns the files loaded, dependencies first.
 pub fn load(dirs: &[PathBuf], names: &[String]) -> Result<Vec<PathBuf>> {
-    let mut graph = ModuleGraph::default();
-    for dir in dirs {
-        if let Ok(g) = parse_dep(dir) {
-            for (module, deps) in g.deps {
-                graph.deps.entry(module).or_insert(deps);
-            }
-        }
-    }
     let mut loaded = Vec::new();
     for name in names {
         let file = format!("{name}.ko");
-        if find_in(dirs, &file).is_none() {
-            bail!("{file} is in none of {dirs:?}");
-        }
+        let dir = dirs
+            .iter()
+            .find(|d| d.join(&file).is_file())
+            .ok_or_else(|| anyhow!("{file} is in none of {dirs:?}"))?;
+        let graph = parse_dep(dir)?;
         for m in graph.load_order(std::slice::from_ref(&file)) {
-            let path = find_in(dirs, &m)
-                .ok_or_else(|| anyhow!("{m} is listed in modules.dep but missing from {dirs:?}"))?;
+            let path = graph
+                .resolve_path(&m)
+                .ok_or_else(|| anyhow!("{m} is listed in {}/modules.dep but missing", dir.display()))?;
             insmod(&path, "")?;
             loaded.push(path);
         }
     }
     Ok(loaded)
-}
-
-/// The first of `dirs` that holds a module file, looked for at its top and
-/// then in the folders below.
-fn find_in(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
-    dirs.iter().find_map(|dir| {
-        let direct = dir.join(name);
-        if direct.is_file() {
-            Some(direct)
-        } else {
-            find_file(dir, name)
-        }
-    })
 }
 
 /// A `modules.dep` graph: each module file mapped to the module files it
@@ -185,6 +161,31 @@ pub fn insmod(path: impl AsRef<Path>, params: &str) -> Result<()> {
         Err(e) if e.raw_os_error() == Some(libc::EEXIST) => Ok(()),
         Err(e) => Err(e).with_context(|| format!("finit_module {}", path.display())),
     }
+}
+
+/// 把 `names` 从内核里卸掉，倒着来：后装的先卸，依赖才走得掉。
+/// 已经不在的跳过。返回真卸掉的那些。
+pub fn unload(names: &[String]) -> Result<Vec<String>> {
+    let mut gone = Vec::new();
+    for name in names.iter().rev() {
+        let c = std::ffi::CString::new(name.as_str()).with_context(|| format!("{name} as a name the kernel takes"))?;
+        let done = unsafe { libc::syscall(libc::SYS_delete_module, c.as_ptr(), libc::O_NONBLOCK) };
+        if done == 0 {
+            gone.push(name.clone());
+            continue;
+        }
+        let e = std::io::Error::last_os_error();
+        match e.raw_os_error() {
+            // 本来就不在，或者内核不让卸（被占着）：都不算致命，留个名字就行。
+            Some(libc::ENOENT) => continue,
+            Some(libc::EBUSY) | Some(libc::EPERM) => {
+                eprintln!("{name} stays in the kernel: {e}");
+                continue;
+            }
+            _ => return Err(e).with_context(|| format!("unload {name}")),
+        }
+    }
+    Ok(gone)
 }
 
 #[cfg(test)]

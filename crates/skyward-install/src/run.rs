@@ -22,7 +22,7 @@ use skyward_sys::{kmsg, prop};
 use skyward_vab::{Slot, SlotMaps, SnapshotState};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -49,24 +49,9 @@ const RETRY: &str = "retry";
 
 /// Scripts written for other recoveries start with the shell they find
 /// here, and look for programs where those recoveries keep them.
-const SBIN: &str = "/sbin";
-/// The names a zip's install script may give its shell in the first line:
-/// recoveries keep a bash, and a script that runs the same words anyway.
-const SBIN_SHELLS: [&str; 3] = ["sh", "bash", "mksh"];
+const SBIN_SHELL: &str = "/sbin/sh";
 const SHELL: &str = "/system/bin/sh";
 const SCRIPT_PATH: &str = "/sbin:/system/bin:/system/xbin";
-
-/// The 7-Zip command line as a zip's install script may call it: the form
-/// that decompresses what comes on its input, which is a zstd frame here,
-/// goes to the recovery's zstd; the rest is the recovery's own.
-const SEVEN_ZIP_SHIM: &str = "#!/system/bin/sh
-for a in \"$@\"; do
-  case \"$a\" in
-    -si=*) exec /system/bin/zstd -d -c ;;
-  esac
-done
-exec /system/bin/7za \"$@\"
-";
 
 /// How long what an install script leaves running may keep its output open
 /// once the script has ended, before it is ended too; and after that, how
@@ -661,7 +646,7 @@ fn reflash(ctx: &Context, kept: &Kept, next: Result<Slot>) {
     });
     let _ = kmsg(&format!("install: this recovery written back to {slots:?}: {written:?}"));
     ctx.send(Event::Reflashed(match written {
-        Ok(()) => Reflash::Written(slots),
+        Ok(written) => Reflash::Written(written),
         Err(e) => Reflash::Failed(format!("{e:#}")),
     }));
 }
@@ -851,30 +836,9 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
         Place::Single => {
             ensure!(slots.is_empty(), "{partition} is in no slot, and was sent to {slots:?}");
             let device = dir.join(&partition);
-            match image.kind {
-                ImageKind::Super { zstd: true } => {
-                    let mut head = [0u8; image::ZSTD_HEAD];
-                    let read = file.read(&mut head).context("read the compressed image's first bytes")?;
-                    file.seek(SeekFrom::Start(0)).context("rewind the package")?;
-                    let expected = image::zstd_size(&head[..read]);
-                    detach_once(ctx)?;
-                    let decoder = zstd::stream::read::Decoder::with_buffer(file).context("decompress the image")?;
-                    flash_super(ctx, decoder, &device, expected)?;
-                }
-                ImageKind::Super { zstd: false } => {
-                    image::check_super(&mut image::Expanded::new(&mut file, layout), skyward_block::size_bytes(&device)?)?;
-                    detach_once(ctx)?;
-                    if layout.sparse {
-                        write_image(ctx, &mut file, layout, &[device], false)?;
-                    } else {
-                        // Checking the super left the file where the metadata
-                        // it read ends; a whole super is written from its start.
-                        file.seek(SeekFrom::Start(0)).context("rewind the image")?;
-                        flash_super(ctx, &mut file, &device, Some(layout.size))?;
-                    }
-                }
-                _ => unreachable!("only a super image is written to the whole super partition"),
-            }
+            image::check_super(&mut image::Expanded::new(&mut file, layout), skyward_block::size_bytes(&device)?)?;
+            detach_once(ctx)?;
+            write_image(ctx, &mut file, layout, &[device], false)?;
         }
         Place::Logical => {
             ensure!(slots == [slot], "{partition} is a logical partition of slot {slot:?}, and was sent to {slots:?}");
@@ -889,18 +853,6 @@ fn flash_image(ctx: &mut Context, image: &Image, file_name: Option<&str>) -> Res
         }
     }
     Ok(Done::Decided(Outcome::Flashed { partition, slots }))
-}
-
-/// Write a super image without reading the large partition back, telling
-/// the screen how far it is.
-fn flash_super<R: Read>(ctx: &Context, file: R, device: &Path, expected: Option<u64>) -> Result<()> {
-    let mut told: Option<Instant> = None;
-    image::flash_super(file, device, expected, &mut |done, total| {
-        if done == total || told.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
-            ctx.send(Event::Progress(Stage::Flashing { done, total }));
-            told = Some(Instant::now());
-        }
-    })
 }
 
 /// Write the image `file` holds to `devices` as `layout` lays it out and
@@ -1052,60 +1004,17 @@ fn extract_script() -> Result<()> {
     out.set_permissions(fs::Permissions::from_mode(0o755)).with_context(|| format!("make {BINARY} runnable"))
 }
 
-/// Give scripts written for other recoveries the shell they start with,
-/// and the 7-Zip command line they expect for an image piped through it.
-///
-/// A zip may name any of the shells in its first line, and the shell
-/// Skyward has runs what a bash script says; one that asks for a name it
-/// does not find is not started at all, the kernel unable to find its
-/// interpreter.
+/// Give scripts written for other recoveries the shell they start with.
 fn shell_at_sbin() -> Result<()> {
-    for name in SBIN_SHELLS {
-        let link = Path::new(SBIN).join(name);
-        match fs::symlink_metadata(&link) {
-            Ok(_) => continue,
-            Err(e) if e.kind() == ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("look at {}", link.display())),
-        }
-        fs::create_dir_all(SBIN).with_context(|| format!("make {SBIN}"))?;
-        symlink(SHELL, &link).with_context(|| format!("link {} to {SHELL}", link.display()))?;
+    let link = Path::new(SBIN_SHELL);
+    match fs::symlink_metadata(link) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("look at {SBIN_SHELL}")),
     }
-    // A zip may pipe a compressed image through the 7-Zip command line to
-    // decompress it, and the recovery's own takes only zips. Without this
-    // the pipeline would put nothing on the partition and the script would
-    // still say it finished.
-    if Path::new("/system/bin/7za").exists() {
-        let shim = Path::new(SBIN).join("7za");
-        if fs::symlink_metadata(&shim).is_err() {
-            fs::write(&shim, SEVEN_ZIP_SHIM).with_context(|| format!("write {}", shim.display()))?;
-            fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).with_context(|| format!("make {} runnable", shim.display()))?;
-        }
-    }
-    Ok(())
-}
-
-/// The device a mount point is of, read from the mounts list.
-fn backing_device(point: &str) -> Option<PathBuf> {
-    let mounts = fs::read_to_string("/proc/self/mounts").ok()?;
-    mounts.lines().find_map(|line| {
-        let mut fields = line.split_whitespace();
-        let source = fields.next()?;
-        (fields.next()? == point).then(|| PathBuf::from(source))
-    })
-}
-
-/// Mark the block device behind a mount writable again, where mounting it
-/// read only left it so.
-fn set_writable(device: &Path) {
-    // _IO(0x12, 93), which the libc crate does not name for Android.
-    // bionic's ioctl request arg is a c_int, so the request is
-    // reinterpreted into it rather than widened.
-    const BLKROSET: u32 = 0x125d;
-    let Ok(file) = File::open(device) else { return };
-    let off: libc::c_int = 0;
-    // SAFETY: the file is a block device open for reading, and BLKROSET
-    // takes a pointer to the int that says whether it is read only.
-    unsafe { libc::ioctl(file.as_raw_fd(), BLKROSET as libc::c_int, &off) };
+    let dir = link.parent().expect("the link is in a folder");
+    fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+    symlink(SHELL, link).with_context(|| format!("link {SBIN_SHELL} to {SHELL}"))
 }
 
 /// A line one of the install script's outputs gave.
@@ -1133,22 +1042,6 @@ impl Drop for Group {
 /// leaves running is ended with it.
 fn run_binary(ctx: &Context) -> Result<(i32, bool)> {
     let mut log = File::create(SCRIPT_LOG).with_context(|| format!("create {SCRIPT_LOG}"))?;
-    // A script may write the modem partition, and it is the one the recovery
-    // mounts to read firmware from: a mounted block device cannot be written,
-    // the write refused with "Operation not permitted", and mounting it read
-    // only leaves it marked so past the unmount. Let the mounts go, and mark
-    // the partitions writable again, before the script starts.
-    for point in ["/firmware", "/vendor/firmware", "/vendor/firmware_mnt"] {
-        let device = backing_device(point);
-        if let Ok(p) = std::ffi::CString::new(point) {
-            // SAFETY: a NUL-terminated mount point; detaching it lets
-            // whatever holds a file there keep it until it lets go.
-            unsafe { libc::umount2(p.as_ptr(), libc::MNT_DETACH) };
-        }
-        if let Some(device) = device {
-            set_writable(&device);
-        }
-    }
     let (requests_read, requests_write) = pipe()?;
     let (output_read, output_write) = pipe()?;
     let fd = requests_write.as_raw_fd();

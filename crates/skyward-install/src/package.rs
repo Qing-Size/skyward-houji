@@ -17,16 +17,8 @@ const METADATA: &str = "META-INF/com/android/metadata";
 /// The install script of a zip that installs itself.
 pub const UPDATE_BINARY: &str = "META-INF/com/google/android/update-binary";
 
-/// The most read to tell an image's kind: every header this recovery
-/// writes fits in one page, and a super image's metadata starts in the
-/// next one.
-const HEAD: usize = 8192;
-
 /// What a zip starts with.
 const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
-
-/// A zstd frame starts with this.
-const ZSTD_MAGIC: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Package {
@@ -89,15 +81,9 @@ impl Metadata {
 /// Tell what `file` holds from its first bytes and, for a zip, its
 /// directory.
 pub fn identify<R: Read + Seek>(mut file: R) -> Result<Package> {
-    let mut head = Vec::with_capacity(HEAD);
-    (&mut file).take(HEAD as u64).read_to_end(&mut head).context("read the package's first bytes")?;
-    // A compressed super image is written only as part of the ROM package
-    // it comes in, by that package's install script; one given alone is no
-    // package.
-    if head.starts_with(ZSTD_MAGIC) {
-        return Ok(Package::Unknown);
-    }
-    if !head.starts_with(ZIP_MAGIC) {
+    let mut head = Vec::with_capacity(ZIP_MAGIC.len());
+    (&mut file).take(ZIP_MAGIC.len() as u64).read_to_end(&mut head).context("read the package's first bytes")?;
+    if head != ZIP_MAGIC {
         let len = file.seek(SeekFrom::End(0)).context("find the package's size")?;
         return image::open(&mut file, len).map(Package::Image);
     }
@@ -341,15 +327,5 @@ METADATA_SIZE=1024
         let text = Image { kind: image::ImageKind::Other, layout: image::Layout::whole(14) };
         assert_eq!(identify(Cursor::new(b"just some text".to_vec())).unwrap(), Package::Image(text), "no zip, and nothing an image is known by");
         assert_eq!(identify(Cursor::new(Vec::new())).unwrap(), Package::Image(Image { kind: image::ImageKind::Other, layout: image::Layout::whole(0) }));
-    }
-
-    #[test]
-    fn a_bare_super_image_compressed_with_zstd_is_no_package() {
-        let mut super_image = vec![0u8; 8192];
-        super_image[4096..4100].copy_from_slice(&[0x67, 0x44, 0x6c, 0x61]);
-        let squeezed = zstd::stream::encode_all(&super_image[..], 1).unwrap();
-        assert_eq!(identify(Cursor::new(squeezed)).unwrap(), Package::Unknown, "a compressed super is flashed only from its ROM package");
-        let other = zstd::stream::encode_all(&b"just some text"[..], 1).unwrap();
-        assert_eq!(identify(Cursor::new(other)).unwrap(), Package::Unknown);
     }
 }

@@ -108,7 +108,11 @@ mod tests {
     #[test]
     fn the_terminal_sends_every_key_to_its_shell() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        // 终端默认搬到了首页「其他」（2026-11-27）。
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.home_sections.iter_mut().for_each(|section| section.collapsed = false);
+        app.state.home_rest_collapsed = false;
+        app.refresh();
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Terminal)), vec![Effect::StartShell("/".into())], "the page asks for a shell the first time");
         let (rows, cols) = app.term_size(&f);
         assert!(rows >= 20 && cols >= 40, "a screen of {rows} rows by {cols}");
@@ -127,12 +131,13 @@ mod tests {
     }
 
     #[test]
-    fn the_file_managers_button_opens_the_terminal_in_the_folder_shown() {
+    fn the_file_manager_opens_the_terminal_in_the_folder_shown() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Files, W, H, PPD);
         app.set_files("/sdcard/Download".into(), Ok(vec![entry("a.txt", FileKind::File)]), 0);
-        assert_eq!(app.frame(&f, &i).button, Some((widgets::Glyph::Terminal, Action::TerminalHere)));
-        assert_eq!(tap_button(&mut app, &f, &i, 0), vec![Effect::StartShell("/sdcard/Download".into())], "a shell starts there");
+        // 右上角那个圆钮换成了两枚胶囊（U 盘、搜索），终端的入口不再在页上。
+        assert_eq!(app.frame(&f, &i).button, None, "the bar keeps no round button");
+        assert_eq!(app.act(Action::TerminalHere, 0), vec![Effect::StartShell("/sdcard/Download".into())], "a shell starts there");
         assert_eq!(app.screen(), Screen::Terminal);
         let (rows, cols) = app.term_size(&f);
         app.term_started(rows, cols);
@@ -141,42 +146,8 @@ mod tests {
         app.term_started(rows, cols);
         tap_back(&mut app, &f, &i, 0);
         app.set_files("/data/adb".into(), Ok(Vec::new()), 0);
-        assert_eq!(tap_button(&mut app, &f, &i, 0), vec![Effect::ShellTo("/data/adb".into())], "the shell running goes there");
+        assert_eq!(app.act(Action::TerminalHere, 0), vec![Effect::ShellTo("/data/adb".into())], "the shell running goes there");
         assert_eq!(app.screen(), Screen::Terminal);
-    }
-
-    #[test]
-    fn the_bars_round_button_darkens_under_a_finger_on_the_frames_drawn() {
-        let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Files, W, H, PPD);
-        app.set_files("/data/adb".into(), Ok(vec![entry("a.txt", FileKind::File)]), LISTED);
-        let t = app.theme();
-        let (cx, cy, _) = widgets::button_disc(&t);
-        let k = (((cy - t.m.dp(5.0)) as u32 * W + (cx + t.m.dp(5.0)) as u32) * 4) as usize;
-        let mut c = Canvas::new(W, H);
-        let mut pixel = |app: &mut App, now: u64| {
-            app.tick(now);
-            app.compose(&mut c, &f, &i, "12:00", now);
-            c.data[k..k + 4].to_vec()
-        };
-        let (x, y) = widgets::button_rect(&t).centre();
-        let rest = pixel(&mut app, 0);
-        app.touch(Touch::Down(x, y), &f, 100);
-        assert_ne!(pixel(&mut app, 100), rest, "held down, its disc darkens");
-        assert_eq!(app.touch(Touch::Up, &f, 150), vec![Effect::StartShell("/data/adb".into())]);
-        for now in (150..1000).step_by(8) {
-            pixel(&mut app, now);
-        }
-        assert_eq!(app.screen(), Screen::Terminal, "the terminal slides in");
-        app.text_opened(&f, "/data/adb/a.txt".into(), Ok(Some(b"a".to_vec())), 1000);
-        app.state.editor.as_mut().expect("the editor page shows a file").insert('b');
-        app.refresh();
-        for now in (1000..1500).step_by(8) {
-            pixel(&mut app, now);
-        }
-        app.touch(Touch::Down(x, y), &f, 1500);
-        pixel(&mut app, 1500);
-        assert_eq!(app.touch(Touch::Up, &f, 1550), vec![Effect::SaveText { path: "/data/adb/a.txt".into(), text: "ba".into() }]);
     }
 
     #[test]

@@ -474,29 +474,12 @@ pub fn release_partitions(slot: Slot, busy: &[PathBuf]) -> Result<()> {
     for m in mounted_partitions(slot)?.into_iter().rev() {
         if busy.contains(&m.mount_point) {
             mount::umount_detach_over(&m.mount_point)?;
-            continue;
-        }
-        match mount::umount_over(&m.mount_point) {
-            Ok(()) => snapshots::unmap_snapshot(&m.partition)?,
-            // A partition the services do not hold can still be busy for
-            // something else the recovery did - a file a page read, a
-            // folder a check visited - and the plain unmount then fails
-            // with EBUSY. It still has to leave the tree before the update
-            // writes, so take it out at once and let whatever holds it keep
-            // its files until it lets go, as for a partition the services
-            // hold.
-            Err(e) if in_use(&e) => mount::umount_detach_over(&m.mount_point)?,
-            Err(e) => return Err(e),
+        } else {
+            mount::umount_over(&m.mount_point)?;
+            snapshots::unmap_snapshot(&m.partition)?;
         }
     }
     Ok(())
-}
-
-/// Whether an unmount failed because the filesystem still has files in use.
-fn in_use(e: &anyhow::Error) -> bool {
-    e.chain()
-        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
-        .any(|e| e.raw_os_error() == Some(libc::EBUSY))
 }
 
 /// Undo `mount_partitions`: unmount the slot's partitions where their own

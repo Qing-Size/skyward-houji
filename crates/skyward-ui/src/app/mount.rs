@@ -50,9 +50,14 @@ mod tests {
     use crate::app::testing::*;
 
     #[test]
-    fn home_opens_the_mount_page() {
+    fn the_advanced_page_opens_the_mount_page() {
+        // 分区管理默认搬到首页「其他」了；这里让高级页先把它显示出来（2026-11-27）。
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.home_sections.iter_mut().for_each(|s| s.collapsed = false);
+        app.state.home_rest_collapsed = false;
+        app.refresh();
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Partitions)), vec![Effect::ReadPartitions], "the page lists the partitions");
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Mount)), vec![Effect::ReadMounts], "the page shows the partitions as they are now");
         assert_eq!(app.screen(), Screen::Mount);
     }

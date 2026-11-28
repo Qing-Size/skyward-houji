@@ -340,6 +340,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "byteorder-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1323,6 +1329,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "image"
+version = "0.25.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+dependencies = [
+ "bytemuck",
+ "byteorder-lite",
+ "moxcms",
+ "num-traits",
+ "zune-core 0.5.3",
+ "zune-jpeg 0.5.15",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1663,6 +1693,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "moxcms"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
+dependencies = [
+ "num-traits",
+ "pxfm",
+]
+
+[[package]]
 name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1992,6 +2032,22 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "pxfm"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qrcodegen"
+version = "1.8.0"
+
+[[package]]
+name = "quick-error"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quote"
@@ -2457,7 +2513,7 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "skyward"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2465,6 +2521,8 @@ dependencies = [
  "hex",
  "libc",
  "procfs",
+ "serde_json",
+ "sha2 0.10.9",
  "skyward-backup",
  "skyward-binder",
  "skyward-block",
@@ -2479,6 +2537,7 @@ dependencies = [
  "skyward-net",
  "skyward-omapi",
  "skyward-programs",
+ "skyward-root",
  "skyward-sys",
  "skyward-systems",
  "skyward-ui",
@@ -2491,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-backup"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -2506,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-binder"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2515,7 +2574,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-block"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -2527,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-bootimg"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "abootimg-oxide",
  "anyhow",
@@ -2539,7 +2598,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-config"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2548,7 +2607,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-crypto"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2560,12 +2619,11 @@ dependencies = [
  "sha2 0.10.9",
  "skyward-binder",
  "skyward-block",
- "skyward-omapi",
 ]
 
 [[package]]
 name = "skyward-files"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2573,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-info"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2588,7 +2646,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-install"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "abootimg-oxide",
  "android-sparse-image",
@@ -2620,7 +2678,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-lp"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "sha2 0.10.9",
@@ -2629,7 +2687,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-modules"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2638,7 +2696,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-mtp"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "jiff",
@@ -2651,7 +2709,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-net"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2673,7 +2731,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-omapi"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "skyward-binder",
@@ -2682,7 +2740,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-pack"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2700,7 +2758,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-preview"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "png",
@@ -2717,7 +2775,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-programs"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "object",
@@ -2729,8 +2787,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyward-root"
+version = "0.5.0"
+
+[[package]]
 name = "skyward-sys"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2739,7 +2801,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-system-init"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2752,7 +2814,7 @@ dependencies = [
 
 [[package]]
 name = "skyward-systems"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "abootimg-oxide",
  "anyhow",
@@ -2771,21 +2833,25 @@ dependencies = [
 
 [[package]]
 name = "skyward-ui"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "ab_glyph",
  "ab_glyph_rasterizer",
  "anyhow",
+ "cc",
  "deunicode",
  "drm",
  "drm-ffi",
  "icu_casemap",
  "icu_locale_core",
  "icu_plurals",
+ "image",
+ "image-webp",
  "jiff",
  "libc",
  "png",
  "proc-macro2",
+ "qrcodegen",
  "quote",
  "serde",
  "serde_json",
@@ -2796,17 +2862,20 @@ dependencies = [
  "skyward-vab",
  "svgtypes",
  "syn 2.0.119",
+ "tempfile",
  "tiny-skia",
  "toml",
  "ttf-parser",
  "unicode-script",
  "unicode-width",
  "vt100",
+ "zip 8.6.0",
+ "zune-jpeg 0.4.21",
 ]
 
 [[package]]
 name = "skyward-vab"
-version = "0.5.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -3691,4 +3760,34 @@ checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",
+]
+
+[[package]]
+name = "zune-core"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f423a2c17029964870cfaabb1f13dfab7d092a62a29a89264f4d36990ca414a"
+
+[[package]]
+name = "zune-core"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.4.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29ce2c8a9384ad323cf564b67da86e21d3cfdff87908bc1223ed5c99bc792713"
+dependencies = [
+ "zune-core 0.4.12",
+]
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+dependencies = [
+ "zune-core 0.5.3",
 ]

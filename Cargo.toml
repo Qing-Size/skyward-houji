@@ -19,6 +19,7 @@ members = [
     "crates/skyward-net",
     "crates/skyward-preview",
     "crates/skyward-pack",
+    "crates/skyward-root",
     "crates/skyward-sys",
     "crates/skyward-lp",
     "crates/skyward-bootimg",
@@ -27,7 +28,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.5.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 

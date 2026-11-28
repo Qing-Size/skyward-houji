@@ -12,6 +12,8 @@ pub mod cpu;
 #[cfg(target_os = "android")]
 pub mod sleep;
 #[cfg(target_os = "android")]
+pub mod remoteproc;
+#[cfg(target_os = "android")]
 pub mod uevent;
 pub mod ueventd;
 pub mod usb;
@@ -226,7 +228,74 @@ const RECORD_MOST: usize = 1024 - 48;
 /// the seconds since the phone started as the kernel log stamps it. The
 /// file takes the text first and whole; the kernel takes each of its lines
 /// as a record of its own, and a line longer than a record as several.
+/// Where a copy of the log outlives the recovery, for reading from the running
+/// system when the data partition will not open: the persist partition, which
+/// the phone mounts at boot, and the metadata partition, which is not
+/// encrypted. Whichever takes it is used.
+const KEPT_FILES: [&str; 2] = ["/mnt/vendor/persist/skyward-boot.log", "/metadata/skyward/boot.log"];
+
+/// What the log has said while none of [`KEPT_FILES`] could be written yet:
+/// the bring-up's own first lines come before the partition they are kept on
+/// is mounted, and they are wanted from the first of them. Held here until a
+/// file takes them, and let go of beyond a few thousand lines so that a phone
+/// whose partitions never mount does not grow this without end.
+static PENDING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether `path` lies on a partition the phone has mounted: until persist is
+/// mounted, the folder it goes into is one of the ramdisk's own, which the
+/// partition then covers over -- a file written there is gone by the next line.
+fn on_a_mount(path: &str) -> bool {
+    let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else { return false };
+    mounts
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .any(|point| path.starts_with(point) && point.len() > 1)
+}
+
+/// 已经在写的那份副本：找到一次就记住，之后每行直接写它。找它要读
+/// `/proc/mounts` 再 open 一次，每行都做一遍曾是这行日志的主要开销——模块加载
+/// 那两百行就拖住开机近一秒（2026-11-26，取自 Ff428/skyward-XiaoMi17ProMax）。
+static BESIDE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+
+/// 打开 [`KEPT_FILES`] 里第一个落在已挂载分区上的文件。
+fn open_besides() -> Option<std::fs::File> {
+    for path in KEPT_FILES {
+        if !on_a_mount(path) {
+            continue;
+        }
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(f) = OpenOptions::new().create(true).append(true).open(path) {
+            return Some(f);
+        }
+    }
+    None
+}
+
+/// Append `text` to the first of [`KEPT_FILES`] that can be written, if any,
+/// with every line held so far before it.
+fn keep_besides(text: &str) {
+    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    pending.push(text.to_string());
+    if pending.len() > 4000 {
+        pending.drain(..1000);
+    }
+    let mut beside = BESIDE.lock().unwrap_or_else(|e| e.into_inner());
+    if beside.is_none() {
+        *beside = open_besides();
+    }
+    let Some(f) = beside.as_mut() else { return };
+    for line in pending.drain(..) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// `/dev/kmsg` 也开一次就留着：每行重新 open 同样是这一行的开销。
+static KMSG: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+
 pub fn kmsg(text: &str) -> Result<()> {
+    keep_besides(text);
     let kept = match KEPT.get() {
         Some(kept) => {
             let mut kept = kept.lock().expect("nothing panics while writing the log");
@@ -234,7 +303,11 @@ pub fn kmsg(text: &str) -> Result<()> {
         }
         None => Ok(()),
     };
-    let mut f = OpenOptions::new().write(true).open("/dev/kmsg")?;
+    let mut kmsg = KMSG.lock().unwrap_or_else(|e| e.into_inner());
+    if kmsg.is_none() {
+        *kmsg = Some(OpenOptions::new().write(true).open("/dev/kmsg")?);
+    }
+    let f = kmsg.as_mut().expect("the kmsg file was just opened");
     for record in written(text) {
         f.write_all(record.as_bytes())?;
     }

@@ -199,7 +199,12 @@ mod tests {
     #[test]
     fn the_filesystem_page_does_to_a_partition_what_is_chosen_and_reads_them_again_after() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        // 分区管理默认搬到首页「其他」了；这里测页面本身，让高级页先显示它。
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.home_sections.iter_mut().for_each(|s| s.collapsed = false);
+        app.state.home_rest_collapsed = false;
+        app.refresh();
+        assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Partitions)), vec![Effect::ReadPartitions]);
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Filesystems)), vec![Effect::ReadFilesystems]);
         app.set_filesystems(Ok(fs_rows()));
         tap(&mut app, &f, &i, Action::OpenFilesystem(2));

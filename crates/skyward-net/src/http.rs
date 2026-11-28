@@ -40,6 +40,27 @@ impl Resolver for Lookup {
     }
 }
 
+/// How long reaching a mirror may take while measuring them. Every mirror is
+/// measured at once, so one that never answers must not hold up the rest.
+const PROBE_CONNECT: Duration = Duration::from_secs(3);
+
+/// How long a mirror may go without sending while it is measured.
+const PROBE_READ: Duration = Duration::from_secs(3);
+
+/// An agent for measuring mirrors: the same lookup as [`agent`], and short
+/// waits, so an unreachable mirror is given up on and the rest are not kept
+/// waiting with it.
+pub fn probe_agent(servers: Servers) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_connect(Some(PROBE_CONNECT))
+        .timeout_per_read(Some(PROBE_READ))
+        .timeout_per_write(Some(PROBE_READ))
+        .http_status_as_error(false)
+        .build();
+    ureq::Agent::with_parts(config, DefaultConnector::new(), Lookup(servers))
+}
+
 /// An agent that looks names up in `servers`, and gives a server's answer
 /// whatever its status: the caller says what a status means.
 pub fn agent(servers: Servers) -> ureq::Agent {

@@ -80,7 +80,7 @@ mod tests {
         app.touch(Touch::Move(track.x + track.w / 2.0, y), &f, 0);
         app.touch(Touch::Move(track.x + track.w, y), &f, 0);
         let fx = app.touch(Touch::Up, &f, 0);
-        assert_eq!(fx, vec![Effect::Reboot(Target::Bootloader)]);
+        assert_eq!(fx, vec![Effect::Haptic, Effect::Reboot(Target::Bootloader)]);
         assert_eq!(app.state.confirm, 0.0, "the knob springs back");
     }
 

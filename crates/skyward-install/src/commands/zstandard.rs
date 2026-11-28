@@ -3,11 +3,10 @@
 //! output or nowhere, with the zstd command's switches that bear on
 //! decompressing. It does not compress.
 
-use super::{copy, copy_to_fd, Failed, Io, CHUNK};
+use super::{copy, Failed, Io, CHUNK};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Read, Write};
-use std::os::fd::RawFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -286,7 +285,7 @@ fn decompress(request: &Request, input: &Input, io: &mut Io) -> Result<(), Strin
     let into = match (&request.to, input) {
         (To::Nowhere, _) => None,
         (To::Output, _) | (To::Own, Input::Standard) => {
-            return decode(from, io.output, request.window_log, request.pass_through, io.fd).map(drop).map_err(|e| match e {
+            return decode(from, io.output, request.window_log, request.pass_through).map(drop).map_err(|e| match e {
                 Failed::Reading(e) => format!("{name}: {e}"),
                 Failed::Writing(e) => format!("standard output: {e}"),
             });
@@ -295,7 +294,7 @@ fn decompress(request: &Request, input: &Input, io: &mut Io) -> Result<(), Strin
         (To::Own, Input::File(path)) => Some(own_name(path)?),
     };
     let Some(into) = into else {
-        let decompressed = decode(from, &mut io::sink(), request.window_log, false, None).map_err(|e| match e {
+        let decompressed = decode(from, &mut io::sink(), request.window_log, false).map_err(|e| match e {
             Failed::Reading(e) | Failed::Writing(e) => format!("{name}: {e}"),
         })?;
         tell(request, io, &name, decompressed);
@@ -306,7 +305,7 @@ fn decompress(request: &Request, input: &Input, io: &mut Io) -> Result<(), Strin
         Input::Standard => None,
     };
     let (mut out, made) = create(&into, request.force, input_path)?;
-    let decompressed = match decode(from, &mut out, request.window_log, request.pass_through, None) {
+    let decompressed = match decode(from, &mut out, request.window_log, request.pass_through) {
         Ok(decompressed) => decompressed,
         Err(e) => {
             // What was written of a file made for it is no use, as zstd
@@ -377,7 +376,7 @@ fn create(path: &Path, force: bool, input: Option<&Path>) -> Result<(File, bool)
 /// Decompress the frames `input` holds into `output`, allowing windows of
 /// up to 2^`window_log` bytes, and give how much they held. With
 /// `pass_through`, an input that does not start as zstd goes out as it is.
-fn decode(input: &mut dyn Read, output: &mut dyn Write, window_log: u32, pass_through: bool, fd: Option<RawFd>) -> Result<u64, Failed> {
+fn decode(input: &mut dyn Read, output: &mut dyn Write, window_log: u32, pass_through: bool) -> Result<u64, Failed> {
     let mut head = [0; 4];
     let mut held = 0;
     while held < head.len() {
@@ -397,15 +396,7 @@ fn decode(input: &mut dyn Read, output: &mut dyn Write, window_log: u32, pass_th
     }
     let mut decoder = zstd::stream::read::Decoder::with_buffer(BufReader::with_capacity(CHUNK, whole)).map_err(Failed::Reading)?;
     decoder.window_log_max(window_log).map_err(Failed::Reading)?;
-    // What goes to a descriptor, as a partition does, is written while it
-    // is decompressed rather than after.
-    match fd {
-        Some(fd) => {
-            output.flush().map_err(Failed::Writing)?;
-            copy_to_fd(&mut decoder, fd)
-        }
-        None => copy(&mut decoder, output),
-    }
+    copy(&mut decoder, output)
 }
 
 /// Whether `head`, the first bytes of an input, starts a frame.
@@ -441,7 +432,7 @@ mod tests {
     fn ran(args: &[&str], input: &[u8]) -> (i32, Vec<u8>, String) {
         let args: Vec<OsString> = args.iter().map(OsString::from).collect();
         let (mut output, mut errors) = (Vec::new(), Vec::new());
-        let code = run(&args, &mut Io { input: &mut Cursor::new(input), output: &mut output, errors: &mut errors, fd: None });
+        let code = run(&args, &mut Io { input: &mut Cursor::new(input), output: &mut output, errors: &mut errors });
         (code, output, String::from_utf8(errors).unwrap())
     }
 

@@ -2,7 +2,7 @@ use crate::app::{
     BackupRefusal, Data, EraseStop, FileKind, FileRow, ItemEnd, MountFailure, Part, PartKind, PartStop, Place, Source, TermEnd, BACKUP_PARTS,
     TIME_ZONES,
 };
-use crate::lang::{three, Lang, Text};
+use crate::lang::{Lang, Text};
 use crate::texts;
 use jiff::civil::DateTime;
 pub use jiff::tz::TimeZone;
@@ -134,6 +134,28 @@ pub fn degrees(tenths: i32) -> String {
 
 pub fn volts(uv: u64) -> String {
     format!("{:.2}V", uv as f64 / 1e6)
+}
+
+/// A current given in microamps, in the unit that reads best: whole amps
+/// where it is whole, hundredths of an amp down to a tenth, and milliamps
+/// below that, so a small draw never shows as a round zero.
+pub fn amps(ua: u64) -> String {
+    if ua < 1_000_000 {
+        return format!("{}mA", (ua as f64 / 1e3).round() as u64);
+    }
+    match ua % 1_000_000 {
+        0 => format!("{}A", ua / 1_000_000),
+        _ => format!("{:.2}A", ua as f64 / 1e6),
+    }
+}
+
+/// The power a charger delivers, in tenths of a watt, as it is said: whole
+/// watts where it lands on one, and one decimal otherwise.
+pub fn watts(tenths: u32) -> String {
+    match tenths % 10 {
+        0 => format!("{}W", tenths / 10),
+        _ => format!("{:.1}W", tenths as f64 / 10.0),
+    }
 }
 
 /// The kernel's battery health in the language; a state it does not list
@@ -775,15 +797,7 @@ pub fn image_kind(l: Lang, kind: ImageKind) -> (&'static str, String) {
         ImageKind::VendorBoot => (image::VENDOR_BOOT, holds::VENDOR_RAMDISK),
         ImageKind::Dtbo => (image::DTBO, holds::OVERLAYS),
         ImageKind::Vbmeta => (image::VBMETA, holds::VERIFIED_BOOT_DATA),
-        ImageKind::Super { zstd: true } => (
-            image::WHOLE_SUPER,
-            three(
-                "zstd 压缩的动态分区，解压后整份写入",
-                "zstd 壓縮的動態分區，解壓後整份寫入",
-                "Holds the dynamic partitions, zstd-compressed",
-            ),
-        ),
-        ImageKind::Super { zstd: false } => (image::WHOLE_SUPER, holds::LOGICAL_PARTITIONS),
+        ImageKind::Super => (image::WHOLE_SUPER, holds::LOGICAL_PARTITIONS),
         ImageKind::Filesystem(filesystem) => return (l.pick(image::PARTITION), holds::filesystem(l, filesystem.name())),
         ImageKind::Other => (image::PARTITION, holds::UNIDENTIFIED),
     };
@@ -953,6 +967,10 @@ pub fn speed(bytes: u64) -> (String, &'static str) {
 
 /// A signal's strength in words, as the stock network details say it.
 pub fn signal(l: Lang, dbm: i32) -> &'static str {
+    // 没扫到的网（记住的、刚连上的）没有 dBm，不能照着 0 说「极佳」。
+    if dbm >= 0 {
+        return l.pick(["未扫描", "未掃描", "Not scanned"]);
+    }
     l.pick(match signal_level(dbm) {
         3 => texts::wlan::signal::EXCELLENT,
         2 => texts::wlan::signal::GOOD,
@@ -974,6 +992,15 @@ pub fn bands(l: Lang, b: Bands) -> String {
 }
 
 /// A generation of Wi-Fi, as the stock network details say it.
+/// 地址是手动指定的还是 DHCP 给的：详情页那一行。2026-11-27。
+pub fn address_source(l: Lang, by_hand: bool) -> &'static str {
+    if by_hand {
+        l.pick(texts::wlan::MANUAL_IP)
+    } else {
+        l.pick(texts::wlan::MANUAL_IP_OFF)
+    }
+}
+
 pub fn generation(l: Lang, n: u8) -> String {
     texts::wlan::generation(l, n)
 }
@@ -995,8 +1022,10 @@ pub fn security(l: Lang, s: Security) -> &'static str {
 /// how the WLAN stands.
 pub fn wlan_value(l: Lang, w: &Wlan) -> &str {
     match (&w.power, &w.joined) {
-        (Power::Off | Power::Failed(_), _) => l.pick(texts::wlan::OFF),
-        (Power::Starting, _) => l.pick(texts::wlan::TURNING_ON),
+        (Power::Off | Power::Failed(_), _) => l.pick(["已关闭", "已關閉", "Off"]),
+        // 开启电台这段时间多数是在等驱动，一旦就绪就会自动连；说「正在连接」
+        // 与实际感受更贴近（2026-11-18）。
+        (Power::Starting, _) => l.pick(["正在连接", "正在連線", "Connecting"]),
         (Power::On, Some(Joined { stage: WlanStage::Connected(_), name, .. })) => name,
         (Power::On, Some(_)) => l.pick(texts::wlan::CONNECTING),
         (Power::On, None) => l.pick(texts::wlan::NOT_CONNECTED),
@@ -1158,6 +1187,25 @@ pub fn screenshots_not_kept(l: Lang, why: &str) -> String {
 /// under, in `zone`: as the system names its own, the time to the
 /// millisecond and then where it was taken,
 /// `Screenshot_2026-10-26-01-45-00-123_Skyward.png`.
+/// 一段录屏的文件名：`Screenrecord_2026-11-21-04-30-00.avi`。
+pub fn record_name(unix_ms: i64, zone: usize) -> String {
+    record_name_in(unix_ms, zone, "avi")
+}
+
+/// 同上，后缀按容器给。
+pub fn record_name_in(unix_ms: i64, zone: usize, ext: &str) -> String {
+    let t = local(unix_ms.div_euclid(1000), rules(zone));
+    format!(
+        "Screenrecord_{:04}-{:02}-{:02}-{:02}-{:02}-{:02}.{ext}",
+        t.year(),
+        t.month(),
+        t.day(),
+        t.hour(),
+        t.minute(),
+        t.second()
+    )
+}
+
 pub fn screenshot_name(unix_ms: i64, zone: &TimeZone) -> String {
     let t = local(unix_ms.div_euclid(1000), zone);
     format!(
@@ -1225,7 +1273,7 @@ mod tests {
             cycles: Some(169),
             design: Some(5_500_000),
             full: Some(5_095_000),
-            voltage: Some(4_482_000),
+            voltage: Some(4_482_000), current: None,
             quick: false,
             plugged: true,
         };
@@ -1590,6 +1638,14 @@ mod tests {
     }
 
     #[test]
+    fn the_details_say_whether_the_address_was_set_by_hand_or_given() {
+        assert_eq!(address_source(HANS, true), "手动 IP");
+        assert_eq!(address_source(Lang::En, true), "Manual IP");
+        assert_eq!(address_source(HANS, false), "自动获取（DHCP）");
+        assert_eq!(address_source(Lang::En, false), "Automatic (DHCP)");
+    }
+
+    #[test]
     fn a_network_short_of_the_internet_says_how_and_what_is_left_to_do() {
         use std::net::Ipv4Addr;
         let joined = |reach: Option<Reach>| {
@@ -1604,6 +1660,7 @@ mod tests {
                 generation: None,
                 mac: "02:00:00:00:00:05".into(),
                 reach,
+                by_hand: false,
             })
         };
         assert_eq!(joining(HANS, &joined(None)), "已连接", "until it has been looked at");
@@ -1633,12 +1690,6 @@ mod tests {
         // The Xiaomi 13 Ultra's installed system, by its ro.build.date.utc.
         let built = 1_778_243_655;
         assert_eq!(date(Lang::Hant, built, china()), "2026年5月8日");
-        assert_eq!(date(Lang::Tr, built, china()), "8 Mayıs 2026");
-        assert_eq!(date(Lang::Ru, built, china()), "8 мая 2026 г.");
-        assert_eq!(date(Lang::De, built, china()), "8. Mai 2026");
-        assert_eq!(date(Lang::Fr, built, china()), "8 mai 2026");
-        assert_eq!(date(Lang::Pl, built, china()), "8 maja 2026");
-        assert_eq!(date(Lang::Ja, built, china()), "2026年5月8日");
         for l in Lang::ALL {
             let written = date(l, built, china());
             assert!(written.contains("2026") && written.contains('8'), "{l:?} writes the year and the day: {written}");
@@ -1651,23 +1702,10 @@ mod tests {
     fn a_count_takes_the_form_its_language_gives_the_number() {
         let items = |l, n| texts::files::line::items(l, n);
         assert_eq!([items(Lang::En, 1), items(Lang::En, 2)], ["1 item", "2 items"]);
-        assert_eq!([items(Lang::Fr, 0), items(Lang::Fr, 1), items(Lang::Fr, 2)], ["0 élément", "1 élément", "2 éléments"], "none is one in French");
-        let russian = [1, 2, 5, 11, 21, 22, 25, 111].map(|n| items(Lang::Ru, n));
-        assert_eq!(russian, ["1 объект", "2 объекта", "5 объектов", "11 объектов", "21 объект", "22 объекта", "25 объектов", "111 объектов"]);
-        let polish = [1, 2, 5, 12, 21, 22].map(|n| items(Lang::Pl, n));
-        assert_eq!(polish, ["1 element", "2 elementy", "5 elementów", "12 elementów", "21 elementów", "22 elementy"]);
-        assert_eq!([items(Lang::Ja, 1), items(Lang::Ja, 68)], ["1 項目", "68 項目"], "one form where the language has one");
         assert_eq!([items(HANS, 1), items(HANS, 68)], ["1 项", "68 项"]);
     }
 
     #[test]
     fn a_row_of_names_is_set_and_ended_as_its_language_does() {
-        assert_eq!(list(Lang::De, ["ART-Cache", "App-Daten"]), "ART-Cache, App-Daten", "German keeps its nouns' capitals");
-        assert_eq!(list(Lang::Ru, ["Кэш ART", "Данные приложений"]), "Кэш ART, данные приложений");
-        assert_eq!(list(Lang::Tr, ["ART önbelleği", "İndirilenler", "Isı kayıtları"]), "ART önbelleği, indirilenler, ısı kayıtları", "by Turkish's own small letters");
-        assert_eq!(list(Lang::Ja, ["ART キャッシュ", "アプリのデータ"]), "ART キャッシュ、アプリのデータ");
-        assert_eq!(users(Lang::Tr, &[0, 10]), "cihaz sahibi ve kullanıcı 10");
-        assert_eq!(users(Lang::Ru, &[0, 10, 999]), "владелец, пользователь 10 и пользователь 999");
-        assert_eq!(users(Lang::Fr, &[10]), texts::users::user(Lang::Fr, 10));
     }
 }

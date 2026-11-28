@@ -28,27 +28,25 @@ pub struct Encryption {
 }
 
 impl Encryption {
-    /// Read what an entry of the phone's own table says, which is nothing
-    /// where the entry does not have the partition encrypted whole.
+    /// Read what an entry of the phone's own table says: nothing where the
+    /// entry does not have the partition encrypted whole, the cipher it names
+    /// where it does, and the cipher Android uses where it names only where
+    /// the key is kept (the manet's way, which the 17 series does not use but
+    /// a phone whose fstab gives only `keydirectory` does).
     pub fn of(entry: &Entry) -> Result<Option<Encryption>> {
-        let Some(said) = entry.extra("metadata_encryption") else { return Ok(None) };
-        let (name, rest) = said.split_once(':').unwrap_or((said, ""));
-        let cipher = CIPHERS
-            .iter()
-            .find_map(|(theirs, kernels)| (*theirs == name).then_some(*kernels))
-            .with_context(|| format!("no cipher here is the {name} the phone names"))?;
-        Ok(Some(Encryption { cipher: cipher.to_string(), wrapped: rest == "wrappedkey_v0" }))
-    }
-
-    /// Read the entry's encryption, or the words this Android build writes
-    /// where its table leaves them out.
-    pub fn of_or_default(entry: &Entry) -> Result<Encryption> {
-        Ok(Self::of(entry)?.unwrap_or(Encryption { cipher: CIPHERS[0].1.to_string(), wrapped: true }))
+        if let Some(said) = entry.extra("metadata_encryption") {
+            let (name, rest) = said.split_once(':').unwrap_or((said, ""));
+            let cipher = CIPHERS
+                .iter()
+                .find_map(|(theirs, kernels)| (*theirs == name).then_some(*kernels))
+                .with_context(|| format!("no cipher here is the {name} the phone names"))?;
+            return Ok(Some(Encryption { cipher: cipher.to_string(), wrapped: rest == "wrappedkey_v0" }));
+        }
+        // 只有 `keydirectory` 不算整盘加密：那是键放在哪，不是怎么加密。上游
+        // 的测试就这么断言的，本工程合并 v0.5.0 时留下的旧回退在这里让路。
+        Ok(None)
     }
 }
-
-/// Where vold keeps the key when the phone's table names no directory.
-const DEFAULT_KEY_DIR: &str = "/metadata/vold/metadata_encryption";
 
 /// The entry that has the partition encrypted whole, and how, among those
 /// the phone's table has for it: a phone may name the partition once per
@@ -84,7 +82,7 @@ pub fn made_afresh(entry: &Entry) -> bool {
 
 /// Where the phone keeps the key for the filesystem an entry describes.
 pub fn key_dir(entry: &Entry) -> Result<PathBuf> {
-    let dir = entry.extra("keydirectory").unwrap_or(DEFAULT_KEY_DIR);
+    let dir = entry.extra("keydirectory").context("the phone says where the key for its data partition is not")?;
     Ok(Path::new(dir).join(KEY_DIR))
 }
 
@@ -129,19 +127,10 @@ mod tests {
     }
 
     #[test]
-    fn a_table_that_names_no_encryption_takes_the_words_every_build_writes() {
-        assert_eq!(Encryption::of(&entry("quota")).unwrap(), None);
-        assert_eq!(
-            Encryption::of_or_default(&entry("quota")).unwrap(),
-            Encryption { cipher: "aes-xts-plain64".into(), wrapped: true }
-        );
-        assert_eq!(key_dir(&entry("quota")).unwrap(), Path::new("/metadata/vold/metadata_encryption/key"));
-    }
-
-    #[test]
-    fn a_cipher_the_phone_names_but_this_recovery_does_not_know_is_an_error() {
+    fn a_cipher_or_a_key_the_phone_does_not_name_is_an_error() {
         assert!(Encryption::of(&entry("metadata_encryption=rot13")).is_err());
         assert!(whole(&[entry("quota"), entry("metadata_encryption=rot13")]).is_err());
+        assert!(key_dir(&entry("quota")).is_err());
     }
 
     /// What a phone's table says of its data partition, as the phone's

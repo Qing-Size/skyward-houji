@@ -3,8 +3,9 @@
 //! partition held before the install, and which slots get it back after.
 
 use crate::image;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
+use skyward_sys::kmsg;
 use skyward_vab::Slot;
 use std::fs::File;
 use std::io::{Cursor, Read};
@@ -31,33 +32,93 @@ pub struct Kept {
 
 impl Kept {
     /// Hold this recovery from the recovery partitions among the links in
-    /// `dir`, before an install; none when the partition of the `current`
-    /// slot does not hold Skyward, as when it was started without being
-    /// flashed.
+    /// `dir`, before an install; none when neither slot's partition holds
+    /// Skyward, as when it was started without being flashed.
     pub fn hold(dir: &Path, current: Slot) -> Result<Option<Kept>> {
-        let (a, image_a) = read(&image::device(dir, PARTITION, Slot::A))?;
-        let (b, image_b) = read(&image::device(dir, PARTITION, Slot::B))?;
-        let (held, image) = match current {
-            Slot::A => (a, image_a),
-            Slot::B => (b, image_b),
-        };
-        Ok(held.skyward.then(|| Kept { dir: dir.to_path_buf(), image, own: held.digest, before: [a, b] }))
+        // A phone whose recovery lives elsewhere, or one whose links are
+        // not the ones this names, has no partition to keep Skyward in:
+        let paths = [image::device(dir, PARTITION, Slot::A), image::device(dir, PARTITION, Slot::B)];
+        if !paths.iter().any(|path| path.exists()) {
+            return Ok(None);
+        }
+        // The slot the recovery runs from is the one whose image is kept;
+        // the other only says what it held. A partition this recovery
+        // cannot read is left unknown rather than made a reason to stop the
+        // install, and the slot that starts next gets this build back
+        // whatever it held (2026-11-25, from Kinaxie/skyward).
+        let mut held = [Held { digest: [0; 32], skyward: false }; 2];
+        let mut images: [Option<Vec<u8>>; 2] = [None, None];
+        for slot in [Slot::A, Slot::B] {
+            let path = &paths[slot.number() as usize];
+            match read(path) {
+                Ok((what, bytes)) => {
+                    held[slot.number() as usize] = what;
+                    images[slot.number() as usize] = Some(bytes);
+                }
+                Err(e) => {
+                    let _ = kmsg(&format!("keep: {} is not read: {e:#}", path.display()));
+                }
+            }
+        }
+        // A build of Skyward in either slot is the one this recovery runs:
+        // the phone may have been started from the other slot's partition,
+        // or from one flashed while the other started.
+        let source = [current, current.other()]
+            .into_iter()
+            .find(|&slot| held[slot.number() as usize].skyward && images[slot.number() as usize].is_some());
+        let Some(source) = source else { return Ok(None) };
+        let own = held[source.number() as usize];
+        let image = images[source.number() as usize].take().expect("a held image");
+        if source != current {
+            let _ = kmsg(&format!("keep: this recovery is taken from slot {}'s partition", source.letter()));
+        }
+        Ok(Some(Kept { dir: dir.to_path_buf(), image, own: own.digest, before: held }))
     }
 
     /// The slots whose recovery partition gets this recovery back, by what
     /// the partitions hold once the install is done; `next` is the slot
-    /// that starts next.
+    /// that starts next. A partition that cannot be read now is treated as
+    /// changed, so this recovery goes back into it.
     pub fn wanted(&self, next: Slot) -> Result<Vec<Slot>> {
-        let (a, _) = read(&image::device(&self.dir, PARTITION, Slot::A))?;
-        let (b, _) = read(&image::device(&self.dir, PARTITION, Slot::B))?;
-        Ok(restore(self.before, [a, b], self.own, next))
+        let after = |slot: Slot| {
+            read(&image::device(&self.dir, PARTITION, slot))
+                .map(|(held, _)| held)
+                .unwrap_or(Held { digest: [0; 32], skyward: false })
+        };
+        Ok(restore(self.before, [after(Slot::A), after(Slot::B)], self.own, next))
     }
 
     /// Write this recovery into the recovery partitions of `slots` and read
-    /// each back; `progress` hears the bytes so far, of all.
-    pub fn write(&self, slots: &[Slot], progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
-        let devices: Vec<PathBuf> = slots.iter().map(|&slot| image::device(&self.dir, PARTITION, slot)).collect();
-        image::flash(&mut Cursor::new(&self.image), self.image.len() as u64, &devices, progress)
+    /// each back; `progress` hears the bytes so far, of all. Each slot is
+    /// written on its own: one that will not take it does not keep the
+    /// others from holding this build.
+    pub fn write(&self, slots: &[Slot], progress: &mut dyn FnMut(u64, u64)) -> Result<Vec<Slot>> {
+        let len = self.image.len() as u64;
+        let total = len * slots.len() as u64 * 2;
+        let mut done = 0;
+        let mut written = Vec::new();
+        let mut failed = Vec::new();
+        for &slot in slots {
+            let path = image::device(&self.dir, PARTITION, slot);
+            let result = image::flash(&mut Cursor::new(&self.image), len, std::slice::from_ref(&path), &mut |at, _| {
+                progress(done + at, total);
+            });
+            match result {
+                Ok(()) => written.push(slot),
+                Err(e) => {
+                    let _ = kmsg(&format!("keep: {} does not take this recovery: {e:#}", path.display()));
+                    failed.push(format!("{}: {e:#}", path.display()));
+                }
+            }
+            done += len * 2;
+        }
+        if written.is_empty() {
+            bail!("{}", failed.join("; "));
+        }
+        if !failed.is_empty() {
+            let _ = kmsg(&format!("keep: this recovery went back into {written:?}, not {failed:?}"));
+        }
+        Ok(written)
     }
 }
 
@@ -142,7 +203,7 @@ mod tests {
         std::fs::write(dir.path().join("recovery_a"), &written).unwrap();
         assert_eq!(kept.wanted(Slot::A).unwrap(), [Slot::A], "slot B held the stock recovery already");
         let mut told = Vec::new();
-        kept.write(&[Slot::A], &mut |done, total| told.push((done, total))).unwrap();
+        assert_eq!(kept.write(&[Slot::A], &mut |done, total| told.push((done, total))).unwrap(), [Slot::A]);
         assert_eq!(told.last(), Some(&(2 * size as u64, 2 * size as u64)), "written and read back");
         let mut whole = skyward.clone();
         whole.resize(size, 0);
@@ -152,11 +213,16 @@ mod tests {
     }
 
     #[test]
+    fn a_build_in_either_slot_is_the_one_kept() {
+        let dir = partitions(&recovery(true), &recovery(false), 1 << 20);
+        assert!(Kept::hold(dir.path(), Slot::B).unwrap().is_some(), "the other slot's partition holds Skyward");
+    }
+
+    #[test]
     fn nothing_is_kept_when_this_recovery_was_started_without_being_flashed() {
         let dir = partitions(&recovery(false), &recovery(false), 1 << 20);
         assert!(Kept::hold(dir.path(), Slot::B).unwrap().is_none());
-        let erased = partitions(&recovery(true), &[], 1 << 20);
-        assert!(Kept::hold(erased.path(), Slot::B).unwrap().is_none(), "an erased partition");
-        assert!(Kept::hold(erased.path(), Slot::A).unwrap().is_some());
+        let erased = partitions(&[], &[], 1 << 20);
+        assert!(Kept::hold(erased.path(), Slot::B).unwrap().is_none(), "neither slot holds Skyward");
     }
 }

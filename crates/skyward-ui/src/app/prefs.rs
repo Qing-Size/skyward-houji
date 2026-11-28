@@ -11,6 +11,10 @@ pub enum Slider {
     Brightness,
     /// How strongly the motor taps.
     Vibration,
+    /// How warm the battery may get before the charge is stepped down, in
+    /// whole degrees Celsius from [`THERMAL_LIMIT_LEAST`] to
+    /// [`THERMAL_LIMIT_MOST`].
+    ThermalLimit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,11 +32,63 @@ pub enum Switch {
     /// Write Skyward back into the recovery partitions an install writes
     /// over.
     KeepRecovery,
+    /// Keep the screen lock that opened the user's files for the starts that
+    /// follow.
+    Remember,
     Wlan,
+    /// Open the WLAN as the recovery starts.
+    WlanAuto,
+    /// Keep the password of the network joined last, beside the network.
+    WlanKeep,
     /// Show the password typed rather than a dot for each character.
     ShowPassword,
+    /// How fast the phone is let to charge, as one of the three steps the
+    /// charge page offers. The programs that settle it are started as the
+    /// recovery comes up, so the step reaches the phone at the next start.
+    ChargeStep(ChargeMode),
+    /// Step the charge down a step when the battery gets warmer than the
+    /// limit the slider sets, and start the recovery again to do it.
+    ThermalGuard,
     /// Keep the time zone the installed system is set to.
     SystemTimeZone,
+}
+
+/// Which root manager patches the new slot after an install. Only one may
+/// be installed, so only one may be chosen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AutoRoot {
+    #[default]
+    None,
+    KernelSu,
+    Magisk,
+}
+
+impl AutoRoot {
+    pub fn name(self) -> &'static str {
+        match self {
+            AutoRoot::None => "none",
+            AutoRoot::KernelSu => "kernelsu",
+            AutoRoot::Magisk => "magisk",
+        }
+    }
+
+    /// 点一下换下一个：关 → KernelSU → Magisk → 关。
+    pub fn next(self) -> AutoRoot {
+        match self {
+            AutoRoot::None => AutoRoot::KernelSu,
+            AutoRoot::KernelSu => AutoRoot::Magisk,
+            AutoRoot::Magisk => AutoRoot::None,
+        }
+    }
+
+    pub fn named(name: &str) -> Option<AutoRoot> {
+        match name {
+            "none" => Some(AutoRoot::None),
+            "kernelsu" => Some(AutoRoot::KernelSu),
+            "magisk" => Some(AutoRoot::Magisk),
+            _ => None,
+        }
+    }
 }
 
 /// How long the screen stays on with nothing touched, in milliseconds, in
@@ -334,6 +390,37 @@ impl State {
 }
 
 impl App {
+    /// 存储里的布局文件读到了（2026-11-27）。
+    pub fn layouts_listed(&mut self, files: Result<Vec<crate::layout::File>, String>, now: u64) {
+        if let Err(why) = &files {
+            self.report(why, now);
+        }
+        self.state.layouts = Some(files);
+        self.refresh();
+    }
+
+    /// 导出布局有了结果（2026-11-27）。
+    pub fn layout_exported(&mut self, result: Result<String, String>, now: u64) {
+        let l = self.state.lang;
+        let message = match result {
+            Ok(path) => format!("{} {path}", l.pick(["布局已导出到", "佈局已匯出到", "The layout is written to"])),
+            Err(why) => why,
+        };
+        self.report(&message, now);
+        self.refresh();
+    }
+
+    /// 导入布局有了结果（2026-11-27）。
+    pub fn layout_imported(&mut self, result: Result<(), String>, now: u64) {
+        let l = self.state.lang;
+        let message = match result {
+            Ok(()) => l.pick(["布局已导入", "佈局已匯入", "The layout is in"]).to_string(),
+            Err(why) => why,
+        };
+        self.report(&message, now);
+        self.refresh();
+    }
+
     /// The installed system is set to the time zone the tz database names
     /// `name`: the clock keeps it while the system's zone is followed.
     pub fn set_system_zone(&mut self, name: &str) -> Result<()> {
@@ -376,15 +463,36 @@ impl App {
         match which {
             Slider::Brightness => self.state.brightness,
             Slider::Vibration => self.state.vibration,
+            Slider::ThermalLimit => {
+                let span = f32::from(THERMAL_LIMIT_MOST - THERMAL_LIMIT_LEAST);
+                (f32::from(self.state.thermal_limit - THERMAL_LIMIT_LEAST) / span).clamp(0.0, 1.0)
+            }
         }
     }
 
     /// Set a slider to `level` of its span, the brightness no lower than
     /// its floor, and draw the slider at `track` on the page again.
     pub(super) fn set_level(&mut self, t: &Theme, which: Slider, track: Rect, level: f32) {
+        let level = level.clamp(0.0, 1.0);
+        if which == Slider::ThermalLimit {
+            // The limit is a whole degree, so the slider lands on one rather
+            // than between two: the span is short, and half a degree either
+            // way would be a limit the page could not name.
+            let span = f32::from(THERMAL_LIMIT_MOST - THERMAL_LIMIT_LEAST);
+            let step = (level * span).round() as u8;
+            self.state.thermal_limit = (THERMAL_LIMIT_LEAST + step).min(THERMAL_LIMIT_MOST);
+            let value = self.level(which);
+            if let Some(fr) = self.frame.as_mut() {
+                fr.canvas.fill_rect(track.x, track.y, track.w, track.h, t.pal.card);
+                widgets::slider(&mut fr.canvas, t, track.x, track.y, track.w, value);
+            }
+            self.layer = None;
+            return;
+        }
         let value = match which {
             Slider::Brightness => &mut self.state.brightness,
             Slider::Vibration => &mut self.state.vibration,
+            Slider::ThermalLimit => unreachable!("a temperature limit is a whole degree, set above"),
         };
         *value = level.clamp(if which == Slider::Brightness { MIN_BRIGHTNESS } else { 0.0 }, 1.0);
         let value = *value;
@@ -405,17 +513,225 @@ mod tests {
     #[test]
     fn the_file_transfer_switch_has_the_runtime_follow_it() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        // 文件传输在首页是一条「点进去」的条目，开关在它自己的页上（2026-11-27）。
+        let mut app = App::new(Screen::Home, W, H, PPD);
         assert!(app.state.file_transfer, "on until turned off");
-        let (_, y) = spot(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer));
-        if y > H as f32 * 0.9 {
-            scroll_to(&mut app, &f, y - H as f32 * 0.8, 0);
-        }
-        assert_eq!(tap_at(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer), 2000), [Effect::FileTransfer(false)]);
+        tap(&mut app, &f, &i, Action::Open(Screen::FileTransfer));
+        assert_eq!(app.screen(), Screen::FileTransfer, "the entry opens its own page");
+        let tap_switch = |app: &mut App, now: u64| -> Vec<Effect> {
+            let fr = app.frame(&f, &i);
+            let hit = fr
+                .hits
+                .iter()
+                .find(|h| h.action == Action::Toggle(Switch::FileTransfer))
+                .expect("the switch is on the file transfer page");
+            let (x, y) = hit.rect.centre();
+            let mut fx = app.touch(Touch::Down(x, y), &f, now);
+            fx.extend(app.touch(Touch::Up, &f, now));
+            fx
+        };
+        assert_eq!(tap_switch(&mut app, 2000), [Effect::FileTransfer(false)]);
         assert!(!app.state.file_transfer);
-        assert_eq!(tap_at(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer), 3000), [Effect::FileTransfer(true)]);
+        assert_eq!(tap_switch(&mut app, 3000), [Effect::FileTransfer(true)]);
         app.file_transfer_failed(false, "无法开启文件传输", 4000);
         assert!(!app.state.file_transfer, "the switch shows how it stands");
+    }
+
+    #[test]
+    fn an_entry_can_wear_a_name_of_its_own() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::HomeOrder, W, H, PPD);
+        // 排序页每一条右边有铅笔，点它进名字页（2026-11-27）。
+        tap(&mut app, &f, &i, Action::EntryRename(Entry::FileTransfer));
+        assert_eq!(app.screen(), Screen::EntryName);
+        assert_eq!(app.state.entry_name, "", "no name of its own yet");
+        app.state.entry_name = "手机互传".into();
+        tap(&mut app, &f, &i, Action::Type(Cap::Enter));
+        assert_eq!(app.screen(), Screen::HomeOrder, "saving goes back to where it came from");
+        assert_eq!(app.state.entry_names.get("file_transfer").map(String::as_str), Some("手机互传"));
+        assert_eq!(
+            Entry::FileTransfer.shown(app.state.lang, &app.state.entry_names),
+            "手机互传",
+            "the home page wears the new name"
+        );
+        // 设置里也留得住，下次开机还是这个名字。
+        let kept = crate::settings::Settings::of(&app.state);
+        assert_eq!(kept.entry_names.get("file_transfer").map(String::as_str), Some("手机互传"));
+        // 再进去，框里就是它现在穿的名字；清空保存就回到自己的名字。
+        tap(&mut app, &f, &i, Action::EntryRename(Entry::FileTransfer));
+        assert_eq!(app.state.entry_name, "手机互传", "the field starts at the name it wears");
+        app.state.entry_name.clear();
+        tap(&mut app, &f, &i, Action::Type(Cap::Enter));
+        assert!(!app.state.entry_names.contains_key("file_transfer"), "empty goes back to its own name");
+        // 名字页上点输入框不会把界面停掉：那里的 TypeInto 没有格可指（2026-11-27 的闪退）。
+        tap(&mut app, &f, &i, Action::EntryRename(Entry::FileTransfer));
+        tap(&mut app, &f, &i, Action::TypeInto(Field::Name));
+        assert_eq!(app.screen(), Screen::EntryName, "tapping the field keeps the page");
+        app.state.entry_name = "手机互传".into();
+        tap(&mut app, &f, &i, Action::Type(Cap::Enter));
+        assert_eq!(app.state.entry_names.get("file_transfer").map(String::as_str), Some("手机互传"));
+        // 恢复默认把名字也清掉。
+        tap(&mut app, &f, &i, Action::HomeReset);
+        assert!(app.state.entry_names.is_empty(), "restoring the defaults clears the names too");
+    }
+
+    #[test]
+    fn the_others_section_moves_but_is_never_removed() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::HomeOrder, W, H, PPD);
+        // 两栏：才有东西可越过。
+        app.state.home_sections = vec![
+            crate::app::Section { name: "甲".into(), entries: vec![Entry::Files], icon: crate::icons::Icon::Layers, collapsed: false },
+            crate::app::Section { name: "乙".into(), entries: vec![Entry::Modules], icon: crate::icons::Icon::Layers, collapsed: false },
+        ];
+        app.state.home_rest.retain(|entry| !matches!(entry, Entry::Files | Entry::Modules));
+        let n = app.state.home_sections.len();
+        assert_eq!(n, 2);
+        assert_eq!(app.state.home_rest_at, None, "默认在末尾");
+        tap(&mut app, &f, &i, Action::HomeShiftRest { up: true });
+        assert_eq!(app.state.home_rest_at, Some(n - 1), "上移一格");
+        for _ in 0..n {
+            tap(&mut app, &f, &i, Action::HomeShiftRest { up: true });
+        }
+        assert_eq!(app.state.home_rest_at, Some(0), "挪到最前就停住");
+        for _ in 0..n + 1 {
+            tap(&mut app, &f, &i, Action::HomeShiftRest { up: false });
+        }
+        assert_eq!(app.state.home_rest_at, None, "再往下就回到末尾");
+        // 排序页上有它的改名与上下移，删除钮只属于分类。
+        let acts: Vec<Action> = app.frame(&f, &i).hits.iter().map(|h| h.action).collect();
+        assert!(acts.contains(&Action::HomeShiftRest { up: true }), "有上移");
+        assert!(acts.contains(&Action::HomeShiftRest { up: false }), "有下移");
+        assert!(acts.contains(&Action::HomeRenameRest), "有改名");
+        let deletes = acts.iter().filter(|a| matches!(a, Action::HomeDeleteSection(_))).count();
+        assert_eq!(deletes, n, "删除钮只有分类才有，兜底的那一栏没有");
+        // 位置留在设置里。
+        app.state.home_rest_at = Some(1);
+        assert_eq!(crate::settings::Settings::of(&app.state).home_rest_at, Some(1));
+        // 删掉排在它前面的那一栏，它的位置跟着往前一格。
+        tap(&mut app, &f, &i, Action::HomeDeleteSection(0));
+        assert_eq!(app.state.home_rest_at, Some(0), "删掉排在前面的那一栏，它的位置跟着往前一格");
+    }
+
+    #[test]
+    fn removing_a_section_hands_its_entries_back_to_the_others() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::HomeOrder, W, H, PPD);
+        app.state.home_sections = vec![crate::app::Section {
+            name: "甲".into(),
+            entries: vec![Entry::Files, Entry::Modules],
+            icon: crate::icons::Icon::Layers,
+            collapsed: false,
+        }];
+        app.state.home_rest.retain(|entry| !matches!(entry, Entry::Files | Entry::Modules));
+        let before = app.state.home_rest.len();
+        tap(&mut app, &f, &i, Action::HomeDeleteSection(0));
+        assert!(app.state.home_sections.is_empty(), "the section is gone");
+        assert_eq!(
+            &app.state.home_rest[before..],
+            &[Entry::Files, Entry::Modules],
+            "the entries it held land at the end of Others, in the order they had"
+        );
+        // 每一条都还在，一个也没丢：分类里的、置顶里的、「其他」里的加起来正好是全部。
+        let mut all: Vec<Entry> = app.state.home_rest.clone();
+        all.extend(app.state.home_top.iter().copied());
+        for section in &app.state.home_sections {
+            all.extend(section.entries.iter().copied());
+        }
+        for entry in crate::app::home::default_rest() {
+            assert!(all.contains(&entry), "{entry:?} is nowhere");
+        }
+    }
+
+    #[test]
+    fn the_home_title_can_be_the_owners_own() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        assert_eq!(app.home_title(), crate::pages::HOME_TITLE, "默认还是 Skyward");
+        assert_eq!(app.frame(&f, &i).title, crate::pages::HOME_TITLE);
+        // 起个名字，首页顶上那个大字就换成它；设置里也留住。
+        app.state.home_title = "槑的小天地".into();
+        app.refresh();
+        assert_eq!(app.home_title(), "槑的小天地");
+        assert_eq!(app.frame(&f, &i).title, "槑的小天地");
+        assert_eq!(crate::settings::Settings::of(&app.state).home_title, "槑的小天地");
+        // 空着就是回 Skyward。
+        app.state.home_title.clear();
+        assert_eq!(app.home_title(), crate::pages::HOME_TITLE);
+        // 入口在排序页，和「新建分类」「恢复默认」并排。
+        let mut order = App::new(Screen::HomeOrder, W, H, PPD);
+        let acts: Vec<Action> = order.frame(&f, &i).hits.iter().map(|h| h.action).collect();
+        assert!(acts.contains(&Action::EditHomeTitle), "排序页上有「首页标题」");
+        // 恢复默认把它一起清掉。
+        order.state.home_title = "槑".into();
+        tap(&mut order, &f, &i, Action::HomeReset);
+        assert!(order.state.home_title.is_empty(), "恢复默认连首页标题一起清");
+    }
+
+    /// 首页每一条都点得开、开出来那页画得出来：漏配页面或漏配输入框会在这里红
+    /// （0.0.163 的闪退就是这样漏掉的）。2026-11-27。
+    #[test]
+    fn every_home_entry_opens_a_page_that_draws() {
+        let (f, i) = (fonts(), info());
+        for entry in crate::app::default_rest() {
+            let mut app = App::new(Screen::Home, W, H, PPD);
+            if !app.state.offers(entry.screen()) {
+                // 这台手机没有的入口（WLAN、第二系统、版本更新）首页不摆，也就点不到。
+                continue;
+            }
+            let action = entry.action();
+            tap(&mut app, &f, &i, action);
+            if matches!(action, Action::FilesOtg) {
+                // 「U 盘管理」没插盘就不换页：只要求点得动。
+                continue;
+            }
+            let expected = match action {
+                Action::Open(screen) => screen,
+                _ => entry.screen(),
+            };
+            assert_eq!(app.screen(), expected, "{entry:?} 打开它自己那页");
+            let frame = app.frame(&f, &i);
+            assert!(frame.canvas.h > 0, "{entry:?} 那页画得出来");
+        }
+    }
+
+    #[test]
+    fn a_renamed_feature_is_found_by_its_own_name() {
+        let mut names = std::collections::BTreeMap::new();
+        names.insert("files".to_string(), "我的文件".to_string());
+        let found = crate::search::find("我的文件", crate::lang::Lang::Hans, &names);
+        assert_eq!(found.first().map(|entry| entry.screen), Some(Screen::Files), "搜新名字找得到");
+        assert_eq!(crate::search::home_name(Screen::Files, &names), Some("我的文件"), "列出来也用新名字");
+        assert_eq!(crate::search::home_name(Screen::Files, &Default::default()), None, "没改过就没有");
+        // 老名字照旧搜得到。
+        assert!(!crate::search::find("文件管理", crate::lang::Lang::Hans, &names).is_empty());
+    }
+
+    /// 布局的导出与导入都能自己挑位置（2026-11-27）。
+    #[test]
+    fn the_layout_pages_can_be_given_a_place() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Layout, W, H, PPD);
+        // 导出：从内部存储开始挑，这一层就能写。
+        tap(&mut app, &f, &i, Action::LayoutBrowseExport);
+        assert_eq!(app.screen(), Screen::LayoutBrowse);
+        assert!(app.state.layout_exporting, "这是在挑导出的目录");
+        assert_eq!(app.state.layout_dir.path, "/sdcard");
+        assert_eq!(
+            tap(&mut app, &f, &i, Action::LayoutExportHere),
+            vec![Effect::ExportLayoutTo { path: "/sdcard".into() }],
+            "就在这一层写"
+        );
+        // 导入：从布局文件夹开始挑，列的是 .json（先退回布局备份那一页）。
+        tap_back(&mut app, &f, &i, 0);
+        assert_eq!(app.screen(), Screen::Layout);
+        tap(&mut app, &f, &i, Action::LayoutBrowseImport);
+        assert_eq!(app.screen(), Screen::LayoutBrowse);
+        assert!(!app.state.layout_exporting, "这是在挑要导入的文件");
+        assert_eq!(app.state.layout_dir.path, "/sdcard/Skyward");
+        // 根上的「上一层」不动。
+        app.state.layout_dir = crate::app::Folder::new("/");
+        assert!(app.act(Action::LayoutUp, 0).is_empty(), "根上没有上一层");
     }
 
     #[test]
@@ -474,7 +790,7 @@ mod tests {
         assert_eq!(app.frame(&f, &i).title, "語言");
         tap_back(&mut app, &f, &i, 0);
         app.tick(1000);
-        assert_eq!((app.screen(), app.frame(&f, &i).title), (Screen::Settings, "設定"), "and so does the page gone back to");
+        assert_eq!((app.screen(), app.frame(&f, &i).title.as_ref().to_owned()), (Screen::Settings, "選項設定".to_owned()), "and so does the page gone back to");
         app.set_mounts(Ok(vec![MountRow { base: "odm".into(), point: "/odm".into(), mounted: true, holders: vec!["qseecomd".into()] }]));
         tap(&mut app, &f, &i, Action::Open(Screen::Language));
         tap(&mut app, &f, &i, Action::Language(Lang::En));
@@ -482,6 +798,8 @@ mod tests {
         app.tick(2000);
         tap_back(&mut app, &f, &i, 2000);
         app.tick(3000);
+        // 分区管理默认搬到了首页「其他」（2026-11-27），从那儿点进去。
+        tap(&mut app, &f, &i, Action::Open(Screen::Partitions));
         tap(&mut app, &f, &i, Action::Open(Screen::Mount));
         tap(&mut app, &f, &i, Action::Unavailable("A partition in use can't be unmounted"));
         assert_eq!(app.toast.as_ref().map(|t| t.0.as_str()), Some("A partition in use can't be unmounted"), "as do its messages");
@@ -570,11 +888,11 @@ mod tests {
         let mut app = App::new(Screen::Settings, W, H, PPD);
         app.set_now(WINTER);
         tap(&mut app, &f, &i, Action::Open(Screen::TimeZone));
-        assert_eq!(app.state.time_zone, zone("Asia/Shanghai"), "China until another is chosen");
+        assert_eq!(app.state.zone().iana_name(), Some("Asia/Shanghai"), "China until another is chosen");
         assert!(!offers(&mut app, &f, &i, Action::Toggle(Switch::SystemTimeZone)), "a phone with no system has no zone of its own to follow");
         tap(&mut app, &f, &i, Action::Open(Screen::TimeZones(Region::EuropeAfrica)));
         tap(&mut app, &f, &i, Action::TimeZone(zone("Europe/London")));
-        assert_eq!((app.state.time_zone, app.screen()), (zone("Europe/London"), Screen::TimeZones(Region::EuropeAfrica)), "the page stays");
+        assert_eq!(app.screen(), Screen::TimeZones(Region::EuropeAfrica), "the page stays");
         assert_eq!(fmt::clock(WINTER, app.state.zone()), "12:00");
         tap_back(&mut app, &f, &i, 1000);
         tap_at(&mut app, &f, &i, Action::TimeZone(zone(UTC)), 2000);
@@ -593,7 +911,7 @@ mod tests {
         // Turned off, the switch leaves the clock in the zone it kept.
         tap(&mut app, &f, &i, Action::Toggle(Switch::SystemTimeZone));
         assert!(!app.state.follow_system_zone);
-        assert_eq!(app.state.time_zone, zone("Europe/Berlin"));
+        assert_eq!(app.state.zone().iana_name(), Some("Europe/Berlin"));
         assert_eq!(fmt::clock(SUMMER, app.state.zone()), "14:00");
         tap_at(&mut app, &f, &i, Action::TimeZone(zone(UTC)), 1000);
         assert_eq!(fmt::clock(SUMMER, app.state.zone()), "12:00");

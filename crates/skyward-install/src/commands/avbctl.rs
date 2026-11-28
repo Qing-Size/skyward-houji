@@ -238,7 +238,7 @@ mod tests {
     fn ran(args: &[&str], phone: &Phone) -> (i32, String, String) {
         let args: Vec<OsString> = args.iter().map(OsString::from).collect();
         let (mut output, mut errors) = (Vec::new(), Vec::new());
-        let code = avbctl(&args, &mut Io { input: &mut io::empty(), output: &mut output, errors: &mut errors, fd: None }, phone);
+        let code = avbctl(&args, &mut Io { input: &mut io::empty(), output: &mut output, errors: &mut errors }, phone);
         (code, String::from_utf8(output).unwrap(), String::from_utf8(errors).unwrap())
     }
 
@@ -346,5 +346,198 @@ mod tests {
         for args in [&[][..], &["--force"], &["disable-dm-verity"]] {
             assert_eq!(ran(args, &phone), (64, String::new(), USAGE.into()), "{args:?}");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What the recovery's own page uses: the same image, read and turned, without
+// the command line.
+
+/// One of the two checks verified boot makes in the slot the phone runs from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    Verity,
+    Verification,
+}
+
+impl Switch {
+    fn check(self) -> Check {
+        match self {
+            Switch::Verity => Check::Verity,
+            Switch::Verification => Check::Verification,
+        }
+    }
+}
+
+/// The slot the phone runs from, and whether its bootloader is locked.
+fn here() -> (String, bool) {
+    let suffix = skyward_sys::prop("ro.boot.slot_suffix").unwrap_or_default();
+    let locked = skyward_sys::prop("ro.boot.vbmeta.device_state").as_deref() == Some("locked");
+    (suffix, locked)
+}
+
+fn phone_of(suffix: &str, locked: bool) -> Phone<'_> {
+    Phone { by_name: Path::new(skyward_block::BY_NAME), suffix, locked }
+}
+
+/// Whether `which` is on in the slot the phone runs from.
+pub fn read(which: Switch) -> anyhow::Result<bool> {
+    let (suffix, locked) = here();
+    is_on(&phone_of(&suffix, locked), which.check()).map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Where a vbmeta image's rollback index lies in its header, big-endian.
+const ROLLBACK_AT: usize = 112;
+
+/// A copy of the slot's vbmeta image, and the rollback index it carries: a
+/// bootloader does not start a slot whose own index is higher than the one
+/// written back, so the pair travels together.
+pub struct Copy {
+    pub bytes: Vec<u8>,
+    pub rollback_index: u64,
+}
+
+/// The rollback index a vbmeta image's header carries.
+pub fn rollback(bytes: &[u8]) -> u64 {
+    u64::from_be_bytes(bytes[ROLLBACK_AT..ROLLBACK_AT + 8].try_into().expect("eight bytes"))
+}
+
+/// How long the vbmeta image is: its header, then the blocks the header sizes.
+fn length(head: &[u8]) -> usize {
+    let auth = u64::from_be_bytes(head[12..20].try_into().expect("eight bytes")) as usize;
+    let aux = u64::from_be_bytes(head[20..28].try_into().expect("eight bytes")) as usize;
+    HEADER_LEN + auth + aux
+}
+
+/// The slot's vbmeta image as it lies, read whole.
+pub fn dump() -> anyhow::Result<Copy> {
+    let (suffix, locked) = here();
+    let (path, at) = top_level(&phone_of(&suffix, locked)).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut file = File::open(&path).map_err(|e| about(&path, e))?;
+    let head = header(&mut file, &path, at).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let whole = length(&head);
+    let mut bytes = vec![0u8; whole];
+    file.seek(SeekFrom::Start(at)).and_then(|_| file.read_exact(&mut bytes)).map_err(|e| about(&path, e))?;
+    Ok(Copy { rollback_index: rollback(&bytes), bytes })
+}
+
+/// Writes a copy back over the slot's vbmeta image, refusing one whose
+/// rollback index is below the slot's own: that is what makes a bootloader
+/// stop starting the slot.
+pub fn restore(copy: &Copy) -> anyhow::Result<()> {
+    let (suffix, locked) = here();
+    let (path, at) = top_level(&phone_of(&suffix, locked)).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut file = OpenOptions::new().read(true).write(true).open(&path).map_err(|e| about(&path, e))?;
+    let head = header(&mut file, &path, at).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let now = rollback(&head);
+    anyhow::ensure!(
+        copy.rollback_index >= now,
+        "the copy's rollback index {} is below the slot's own {now}: a bootloader does not start a slot rolled back",
+        copy.rollback_index
+    );
+    file.seek(SeekFrom::Start(at)).and_then(|_| file.write_all(&copy.bytes)).and_then(|()| file.sync_all()).map_err(|e| about(&path, e))?;
+    Ok(())
+}
+
+/// Turns `which` on or off, as the page asked.
+pub fn turn(which: Switch, on: bool) -> anyhow::Result<()> {
+    let (suffix, locked) = here();
+    anyhow::ensure!(
+        !locked,
+        "the bootloader is locked, and a locked bootloader does not boot a slot whose vbmeta image has been changed"
+    );
+    set(&phone_of(&suffix, locked), which.check(), on).map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+// ---------------------------------------------------------------------------
+// 留得住的副本：页上「备份 vbmeta / 按份写回」用的那几个。
+
+/// 副本放的地方的名字，从那个地方的顶层算起。
+pub const KEPT: &str = "Skyward/vbmeta";
+
+/// 一份留着的副本，它的名字说的是哪一路槽位、什么时候留的，它本身说的是回滚
+/// 索引。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Named {
+    /// 槽位后缀，`_a` 或 `_b`；名字里没有时为空。
+    pub suffix: String,
+    /// 留的时候，按秒；名字里没有时为 0。
+    pub made: i64,
+}
+
+/// 从 `vbmeta_a-1762486400.img` 这样的名字里读出槽位与时间。
+pub fn slot_of(name: &str) -> Option<Named> {
+    let stem = name.strip_suffix(".img")?;
+    let (head, stamp) = stem.rsplit_once('-')?;
+    let made: i64 = stamp.parse().ok()?;
+    let suffix = head.strip_prefix("vbmeta").unwrap_or(head).to_string();
+    Some(Named { suffix, made })
+}
+
+/// 把当前槽位的 vbmeta 原样留一份到 `dir`，名字带上槽位与时间；给出那份的路
+/// 径。目录不存在就建。
+pub fn keep(dir: &Path) -> anyhow::Result<PathBuf> {
+    let (suffix, _) = here();
+    let copy = dump()?;
+    std::fs::create_dir_all(dir).map_err(|e| about(dir, e))?;
+    let made = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let path = dir.join(format!("vbmeta{suffix}-{made}.img"));
+    std::fs::write(&path, &copy.bytes).map_err(|e| about(&path, e))?;
+    // 留一份就得能读回来：写完马上照写回的路数把它读一遍。
+    let back = std::fs::read(&path).map_err(|e| about(&path, e))?;
+    anyhow::ensure!(back == copy.bytes, "{} does not read back as it was written", path.display());
+    Ok(path)
+}
+
+/// 一份留着的副本里的回滚索引。整个文件长度不对就不算数，而不是读到一个假的
+/// 数再拿它去比。
+pub fn kept_rollback(path: &Path) -> anyhow::Result<u64> {
+    let bytes = std::fs::read(path).map_err(|e| about(path, e))?;
+    anyhow::ensure!(bytes.len() >= ROLLBACK_AT + 8, "{} is too short to be a vbmeta image", path.display());
+    anyhow::ensure!(bytes.starts_with(MAGIC), "{} does not start with AVB0", path.display());
+    let rollback = rollback(&bytes);
+    let header = length(&bytes);
+    anyhow::ensure!(bytes.len() >= header, "{} is cut short: {} of {header} bytes", path.display(), bytes.len());
+    Ok(rollback)
+}
+
+/// 把 `path` 里的那一份写回当前槽位。回滚索引低了的拒绝就是 [`restore`] 的
+/// 规矩：写成方的镜像正是让 bootloader 不肯开机的那件事。
+pub fn write_back(path: &Path) -> anyhow::Result<u64> {
+    let bytes = std::fs::read(path).map_err(|e| about(path, e))?;
+    anyhow::ensure!(bytes.starts_with(MAGIC), "{} does not start with AVB0", path.display());
+    let copy = Copy { rollback_index: rollback(&bytes), bytes };
+    let index = copy.rollback_index;
+    restore(&copy)?;
+    Ok(index)
+}
+
+#[cfg(test)]
+mod kept_tests {
+    use super::*;
+
+    #[test]
+    fn a_name_says_which_slot_a_copy_is_of_and_when_it_was_taken() {
+        assert_eq!(slot_of("vbmeta_a-1762486400.img"), Some(Named { suffix: "_a".into(), made: 1_762_486_400 }));
+        assert_eq!(slot_of("vbmeta_b-1.img"), Some(Named { suffix: "_b".into(), made: 1 }));
+        // 不是这种名字的，读不出槽位与时间：页上照样列着，只是说不出这两样。
+        assert_eq!(slot_of("vbmeta.img"), None);
+        assert_eq!(slot_of("vbmeta_a-yesterday.img"), None);
+    }
+
+    #[test]
+    fn a_copy_that_is_not_an_image_says_so_rather_than_giving_a_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vbmeta_a-1.img");
+        std::fs::write(&path, b"not an image at all").unwrap();
+        assert!(kept_rollback(&path).unwrap_err().to_string().contains("too short"));
+        // 有魔数但头短的，也说清楚是短了。
+        let mut short = b"AVB0".to_vec();
+        short.resize(200, 0);
+        std::fs::write(&path, &short).unwrap();
+        let why = format!("{:#}", kept_rollback(&path).unwrap_err());
+        assert!(why.contains("cut short") || why.contains("too short"), "{why}");
     }
 }

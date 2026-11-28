@@ -40,13 +40,24 @@ mod draw;
 mod entry;
 mod filesystem;
 mod frame;
+mod home;
+mod ime;
 mod input;
+mod modules;
+pub mod dataapp;
+mod dataapp_list;
 mod install;
+mod kernel_su;
 mod keys;
+mod charging;
+mod magisk;
 mod manager;
 mod mount;
+mod partitions;
 mod nav;
 mod power;
+#[cfg(test)]
+mod record_tests;
 mod prefs;
 mod reboot;
 mod relabel;
@@ -54,16 +65,26 @@ mod scroll;
 mod skyward;
 mod state;
 mod systems;
+mod tiles;
 mod terminal;
 #[cfg(test)]
 mod testing;
 mod update;
+mod vbmeta;
+pub use vbmeta::*;
 mod wipe;
 mod wlan;
 
 pub use backup::*;
+pub use charging::*;
 pub use decrypt::*;
 pub use entry::*;
+pub use filesystem::*;
+pub use frame::*;
+pub use home::*;
+pub use install::*;
+pub use kernel_su::*;
+pub use magisk::*;
 pub use filesystem::*;
 pub use frame::*;
 pub use install::*;
@@ -74,6 +95,9 @@ pub use reboot::*;
 pub use relabel::*;
 pub use skyward::*;
 pub use state::*;
+pub use tiles::*;
+
+
 pub use systems::*;
 pub use terminal::*;
 pub use update::*;
@@ -86,10 +110,28 @@ pub enum Screen {
     Decrypt,
     Home,
     Settings,
+    /// 首页排序：一条条拖动/上下调顺序（2026-11-27）。
+    HomeOrder,
+    /// 给分类起名字（新建或改名）。2026-11-27。
+    HomeSection,
+    /// 给分类挑一个图标（全部图标里选）。
+    HomeIcon,
+    /// 给首页的某一条改名（2026-11-27）。
+    EntryName,
+    /// 改首页顶上那个大字（默认是 Skyward）。2026-11-27。
+    HomeTitle,
+    /// 布局导出成文件、从文件导入（2026-11-27）。
+    Layout,
+    /// 挑布局的位置：导出时挑一个目录，导入时挑一个文件（2026-11-27）。
+    LayoutBrowse,
+    /// 某一栏自己的页面：栏里条目排序、往里移、移出去、改名删除。
+    HomeSectionView,
     Reboot,
     Wipe,
     /// Mounting and unmounting the slot's partitions.
     Mount,
+    /// 分区管理：列分区、刷镜像、导出镜像。
+    Partitions,
     Install,
     /// A place's folders and the files in them that can be installed, to
     /// choose one.
@@ -99,6 +141,10 @@ pub enum Screen {
     Installing,
     About,
     Specs,
+    /// What the charger is doing, and how fast the phone is let to charge.
+    Charge,
+    /// 文件传输：内部存储交给电脑的那一个开关（2026-11-27，首页点进来）。
+    FileTransfer,
     /// How long the screen stays on with nothing touched.
     ScreenOff,
     /// Finding a feature or partition by name, typed on the screen's own
@@ -111,9 +157,26 @@ pub enum Screen {
     RestoreBackup,
     /// Backing up or restoring under way, and how it ended.
     BackupJob,
-    /// Tools for the experienced: files, a terminal, the logs.
-    Advanced,
+    /// 任务页：手上在做的事——安装、安装脚本、系统下载——每样一个入口，各回
+    /// 各的页。（从「青菜豆腐」分支搬来。）
+    Tasks,
+    /// 分区镜像的备份：导出、从镜像写回、把不要的镜像删掉，都在这一页。
+    /// （从「青菜豆腐」分支的 `image_backup` 搬来，导出接我们自己的。）
+    ImageBackup,
+    /// The modules installed for the phone's own system (KernelSU's and
+    /// Magisk's), and whether each is switched on.
+    Modules,
+    /// One module: what it is, and what can be done with it.
+    ModuleInfo,
+    /// The apps installed in the phone's data partition, newest first.
+    DataApps,
+    /// 系统分区里的预装应用：只看，不能动。
+    SystemApps,
+    /// One of them: what it is, and a way to take it off.
+    DataAppInfo,
     Files,
+    /// The files on the OTG drive, all of them.
+    FilesOtg,
     /// One file, and what can be done with it.
     FileInfo,
     /// The permission bits of the entry the file page shows, a switch each.
@@ -146,6 +209,23 @@ pub enum Screen {
     /// Where an update the system installed stands, and merging it into
     /// the slot it went to.
     Update,
+    /// The files of a folder served to a browser on the network the phone is
+    /// on, so a computer moves them in and out without a cable.
+    Serve,
+    /// A file taken from an address typed on the page's keyboard, or handed
+    /// over by a page another device opens.
+    Fetch,
+    /// Verified boot's two checks in the slot the phone runs from, turned on
+    /// or off with a swipe.
+    Avb,
+    /// Root 自己的页：装了哪个、模块、以及安装后修补新槽。
+    Root,
+    /// KernelSU 的素材、要写的 KMI，以及写进当前槽的 boot 镜像。
+    KernelSu,
+    /// KernelSU 页要写的那个 KMI。
+    KernelSuKmi,
+    /// Magisk 的启动补丁器，以及写进当前槽的 boot 镜像。
+    Magisk,
     /// Skyward's newest release, and updating to it: its build for the
     /// phone downloaded and written into the recovery partitions.
     SkywardUpdate,
@@ -190,6 +270,13 @@ pub enum Screen {
     /// A network added by hand: its name, how it is protected and its
     /// password, typed on the screen's keyboard.
     WlanAdd,
+    /// 手动 IP 页：地址、掩码、网关、DNS。2026-11-27。
+    WlanStatic,
+    /// 关机页：关机意味什么——手上没做完的活会被切断——说清楚了再滑动。
+    /// 录屏：开始、停止，以及这一段写在哪。
+    Record,
+    /// （从「青菜豆腐」分支搬来。）
+    PowerOff,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -207,6 +294,19 @@ pub enum Confirm {
     DeleteEntry,
     /// Delete the backup the restore page shows.
     DeleteBackup,
+    /// 卸载应用管理里选中的那个应用。
+    DeleteApp,
+    /// 卸载模块管理里选中的那个模块。
+    DeleteModule,
+    /// Keep the screen lock for the starts that follow, with the risk of it
+    /// said first.
+    KeepLock,
+    /// Write the verified boot checks the avb page has turned.
+    Avb,
+    /// 把 KMI 写进当前槽的 boot 镜像。
+    KernelSu,
+    /// 把 Magisk 写进当前槽的 boot 镜像。
+    Magisk,
     /// Install the update that waits to be agreed to.
     Install,
     /// Install an update that erases all user data after it.
@@ -227,12 +327,42 @@ pub enum Confirm {
     RemoveSystem,
     /// Install the system the installer holds with the room chosen.
     InstallSystem,
+    /// Turn the phone off, as the power off page asks for and says the cost
+    /// of first.
+    PowerOff,
+    /// 把选中的那份镜像写回它的分区。
+    ImageRestore,
+    /// 把选中的那份镜像删掉。
+    ImageDelete,
+    /// 开始或停止录屏；正在录就停。
+    Record,
+    /// 把选中的那份 vbmeta 副本写回当前槽位。
+    VbmetaRestore,
 }
 
 /// What a control does when touched.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     Open(Screen),
+    /// Change what the file manager sorts by, how, and whether folders stay on
+    /// top.
+    CycleSort,
+    ToggleSortOrder,
+    ToggleFoldersFirst,
+    /// Turn one of verified boot's checks: `false` is dm-verity, `true` is
+    /// the bootloader's own verification.
+    Avb(bool),
+    /// Start the download the address typed is of, and stop the one under way.
+    FetchStart,
+    FetchStop,
+    /// Take the address from a small file a computer put in Downloads.
+    FetchFromFile,
+    /// Start serving the folder the file manager shows, or stop.
+    ServeToggle,
+    /// Choose the folder served: the file manager's, which is opened for it,
+    /// and this is the bar it is taken from.
+    ServePick,
+    ServeUseHere,
     /// Leave the decrypt page for the page it was opened from; the page
     /// the recovery started on, for the home page without keeping it
     /// behind.
@@ -257,6 +387,28 @@ pub enum Action {
     Sideload,
     /// Send the image to one of the partitions it fits.
     FlashPartition(usize),
+    /// 分区管理：读分区表、选一个分区准备导出、把选中的分区导出成镜像。
+    ReadPartitions,
+    PickDump(usize),
+    DumpNow,
+    /// 点录屏页那一条：没在录就开始，在录就停。
+    Record,
+    /// 开始录屏：文件和目录由拿到它的那一层建好。
+    RecordStart,
+    /// 停止录屏，把文件收好。
+    RecordStop,
+    /// 暂停或继续这一段：胶囊上的红点按一下。
+    RecordPause(bool),
+    /// 换录屏的那一档：分辨率、画质、帧率，点一下换下一档。
+    RecordSetting(crate::app::state::RecordSetting),
+    /// 镜像页：再读一遍有哪些镜像、选中一份、选这一滑动做什么。
+    ImageRefresh,
+    ImagePick(usize),
+    ImageAction(ImageAction),
+    /// AVB 页：留一份当前 vbmeta、选中留着的一份、问要不要写回它。
+    VbmetaKeep,
+    VbmetaPick(usize),
+    VbmetaAsk(bool),
     /// Send the image to these slots.
     FlashSlots(Pick),
     /// Leave the recovery for this target at once.
@@ -299,6 +451,10 @@ pub enum Action {
     SystemSize(usize),
     /// A key of the on-screen keyboard.
     Type(Cap),
+    /// 拼音条上：中/EN 开关、选第几个候选字、翻一页。
+    ImeToggle,
+    ImePick(usize),
+    ImePage(bool),
     /// A key of the row above the keyboard, the terminal's or the editor's.
     TermKey(TermKey),
     /// Empty the search field.
@@ -308,6 +464,65 @@ pub enum Action {
     /// Open the file manager's entry at this place in the folder: a folder
     /// to look in, a text file to edit, or what can be done with any other.
     OpenEntry(usize),
+    /// Copy or move the entry the file page shows onto the OTG drive, or off
+    /// it onto the owner's storage.
+    ToDrive(FileOp),
+    ToPhone(FileOp),
+    /// Ask where a copy or a move goes: the phone's own storage or the drive.
+    AskPlace(FileOp),
+    /// Switch a module on or off, by its place in the list the page shows.
+    ModuleToggle(usize),
+    /// Mark the module at this place in the list to go at the next start, or
+    /// take that mark off.
+    ModuleRemove(usize),
+    /// Install the zip the file page shows as a module.
+    InstallAsModule,
+    /// Open the module at this place in the list.
+    ModuleOpen(usize),
+    /// 选 KernelSU 列表里这个位置的 KMI 来写。
+    KernelSuKmi(usize),
+    /// 用 KMI 自带的内核模块，不用本地选的。
+    KernelSuModuleBuiltIn,
+    /// 把备份的 KernelSU 原厂 boot 写回去。
+    RestoreKernelSu,
+    /// 把备份的 Magisk 原厂 boot 写回去。
+    RestoreMagisk,
+    /// 选哪个 Root 在安装后修补新槽，或不修补；两者不能同时装。
+    SetAutoRoot(AutoRoot),
+    /// 模块管理翻一屏：负数往回。
+    ModulePage(i32),
+    /// 只读的系统应用页翻一屏。
+    SysPage(i32),
+    /// 点系统应用页的一行：排队停用/启用它（系统下次启动执行）。
+    SysAppToggle(usize),
+    /// 应用管理换个范围看：用户应用或系统应用。
+    AppScope(AppsScope),
+    /// 应用管理翻一屏：负数往回。
+    AppPage(i32),
+    /// 打开搜索页，这一次找的是应用。
+    SearchApps,
+    /// 打开搜索页，这一次找的是模块。
+    SearchModules,
+    /// 打开搜索页，这一次找的是当前文件夹里的文件。
+    SearchFiles,
+    /// 排序面板：开着，或者收起。
+    SortPanel(bool),
+    /// 按什么排。
+    SortTo(SortKey),
+    /// 升序还是降序。
+    SortDesc(bool),
+    /// Open the data app at this place in the list.
+    DataAppOpen(usize),
+    /// Take the data app at this place in the list off the phone.
+    DataAppRemove(usize),
+    /// Put the question away without doing anything.
+    DismissPlace,
+    /// Look at the files on the OTG drive.
+    FilesOtg,
+    /// 跳到 /sdcard（文件管理路径条旁的「sdcard」胶囊，2026-11-24）。
+    FilesSdCard,
+    /// Open the OTG entry at this place.
+    OpenOtgEntry(usize),
     /// Open the terminal in the folder the file manager shows.
     TerminalHere,
     /// Open the entry at this place in a place's folder: a folder to look
@@ -338,6 +553,18 @@ pub enum Action {
     /// Ask to delete the entry the file page shows, or the backup the
     /// restore page shows; a swipe then confirms.
     AskDelete,
+    /// Put the asking away, leaving the entry as it was.
+    CancelDelete,
+    /// Start choosing several entries of the folder shown, or stop.
+    ChooseMany(bool),
+    /// Tick or untick the entry at this place in the folder shown.
+    ChooseEntryAt(usize),
+    /// Tick or untick every entry of the folder shown.
+    ChooseAll,
+    /// Copy or move the entries chosen into the folder shown.
+    PasteChosen(FileOp),
+    /// Ask to delete the entries chosen; a swipe then confirms.
+    AskDeleteChosen,
     /// How to go on when a name is taken where an entry goes.
     Resolve(ClashChoice),
     /// Stop giving the data partition's files their labels.
@@ -359,10 +586,74 @@ pub enum Action {
     OpenJoined,
     /// Leave the network joined, and forget it.
     LeaveNetwork,
+    /// 连名单里记住的那一张：密码由后台从 /metadata 那份名单里取。
+    JoinKept(usize),
+    /// 打开名单里记住的那一张的详情页（附近可能根本没扫到它）。
+    KeptDetails(usize),
+    /// 把名单里记住的那一张删掉（密码一起）。
+    ForgetKept(usize),
     /// Look for the networks in range again.
     Rescan,
     /// Open the page that adds a network by hand.
     AddNetwork,
+    /// 打开手动 IP 页：地址、掩码、网关、DNS 四个格子。2026-11-27。
+    OpenWlanStatic,
+    /// 按页上填的那组地址连（不再问 DHCP）。
+    ApplyStatic,
+    /// 改回 DHCP。
+    UseDhcp,
+    /// 首页排序页：拎起这一条（再点一次放下）。2026-11-27。
+    HomePick(Entry),
+    /// 把拎着的那条放到这一条之前。
+    HomePlace(Entry),
+    /// 把拎着的那条放到某一栏的末尾：`None` 是「其他」。
+    HomeToSection(Option<usize>),
+    /// 把拎着的那条单独放到首页最上面（不进任何分类）。
+    HomeToTop,
+    /// 打开某一栏的二级页。
+    HomeOpenSection(usize),
+    /// 把「其他」里的这一条直接收进正在看的这一栏。
+    HomeAdopt(Entry),
+    /// 新建一栏（先起名字）。
+    HomeNewSection,
+    /// 改某一栏的名字，顺带能删它。
+    HomeEditSection(usize),
+    /// 改「其他」的名字（它不能删）。
+    HomeRenameRest,
+    /// 删掉某一栏，里面的条目回到「其他」。
+    HomeDeleteSection(usize),
+    /// 把某一栏往上/下挪一格。
+    HomeShiftSection { at: usize, up: bool },
+    /// 把「其他」在各栏之间往上/下挪一格：它不能删，只能挪（2026-11-27）。
+    HomeShiftRest { up: bool },
+    /// 折叠/展开某一栏；以及「其他」；以及全部。
+    HomeFoldSection(usize),
+    HomeFoldRest,
+    /// 名字页的「完成」。
+    HomeSectionDone,
+    /// 给首页的某一条改名：进它自己的名字页。2026-11-27。
+    EntryRename(Entry),
+    /// 名字页的「完成」，以及改回默认名字。
+    EntryNameDone,
+    EntryNameReset,
+    /// 改首页顶上那个大字（2026-11-27）。
+    EditHomeTitle,
+    HomeTitleDone,
+    /// 把现在这一份布局写成文件；以及从存储里第几个文件导入（2026-11-27）。
+    ExportLayout,
+    ImportLayout(usize),
+    /// 挑位置：进导出用的目录浏览、进导入用的文件浏览、上一层、进一层、
+    /// 就在这一层导出、导入这个文件（2026-11-27）。
+    LayoutBrowseExport,
+    LayoutBrowseImport,
+    LayoutUp,
+    LayoutEnter(usize),
+    LayoutExportHere,
+    LayoutPick(usize),
+    /// 挑中第几个图标（`icons::ALL` 的下标）。
+    HomePickIcon(usize),
+    /// 首页恢复默认（分类清空、条目回默认顺序）。
+    HomeReset,
     /// Type into this field of the page that adds a network.
     TypeInto(Field),
     /// Open the protections a network added by hand can have.
@@ -420,6 +711,11 @@ pub enum Shot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Reboot(Target),
+    /// Read the charger again, so the page shows what it is delivering now.
+    ChargeWatch,
+    /// Start the recovery again so the chosen charge step takes: the programs
+    /// that settle it are started only as the recovery comes up.
+    ChargeStep(ChargeMode),
     /// A short tap of the vibration motor.
     Haptic,
     /// The motor's two quick ticks as the power key turns the screen off,
@@ -449,6 +745,44 @@ pub enum Effect {
     Cancel,
     /// Read the slot's partitions for the mount page, which has just opened.
     ReadMounts,
+    /// Read the modules installed for the phone's own system.
+    ReadModules,
+    /// Have the module in this folder switched on or off: the folder's name,
+    /// and whether it is to be on.
+    ModuleSwitch(String, bool),
+    /// Have the module in this folder removed at the next start, or keep it:
+    /// the folder's name, and whether it is to go.
+    ModuleRemove(String, bool),
+    /// 读 KernelSU 与手机的现状，用 [`App::set_kernel_su`] 告知。
+    ReadKernelSu,
+    /// 把 KMI 写进当前槽的 boot 镜像，用 [`App::kernel_su_started`]、
+    /// [`App::kernel_su_progress`]、[`App::kernel_su_ended`] 告知过程。
+    InstallKernelSu { kmi: String, module: Option<String> },
+    /// 把 KernelSU 换掉的 boot 镜像写回去，过程同安装。
+    RestoreKernelSu,
+    /// 读 Magisk 与手机的现状，用 [`App::set_magisk`] 告知。
+    ReadMagisk,
+    /// 把 Magisk 写进当前槽的 boot 镜像，用 [`App::magisk_started`]、
+    /// [`App::magisk_progress`]、[`App::magisk_ended`] 告知过程。
+    InstallMagisk,
+    /// 把 Magisk 换掉的 boot 镜像写回去，过程同安装。
+    RestoreMagisk,
+    /// 手指把卡滑回去：正在下的这一份停下，已写出去的不管。
+    CancelRoot { magisk: bool },
+    /// 问一下 GitHub 上 KernelSU 与 Magisk 的最新版本号。
+    ReadRootLatest,
+    /// Install, or install over, the module the zip at this path carries.
+    ModuleInstall(String),
+    /// Read the apps installed in the data partition.
+    ReadDataApps,
+    /// 读系统分区里的预装应用（只读页用）。
+    ReadSystemApps,
+    /// 读系统应用的停用状态（`/data/adb/skyward/pm-state`）。
+    ReadAppStates,
+    /// 把系统应用的停用/启用排进队列，系统下次启动由 pm 执行。
+    QueueAppState { package: String, disable: bool },
+    /// Take the app in this `/data/app` folder off, package and folder.
+    DataAppRemove(String, String),
     /// Read what the boot control holds of the slots, telling it with
     /// [`App::set_boot_slots`].
     ReadSlots,
@@ -513,6 +847,11 @@ pub enum Effect {
     /// Copy or move an entry into a folder; with no choice made yet, a name
     /// taken there is told with [`App::file_clash`] instead of going on.
     Paste { op: FileOp, path: String, into: String, clash: Option<ClashChoice> },
+    /// Copy or move these, or delete them.
+    PasteMany { op: FileOp, paths: Vec<String>, into: String, clash: Option<ClashChoice> },
+    DeleteMany(Vec<String>),
+    /// Read the folder at this path on the OTG drive.
+    ReadOtg(String),
     /// Give an entry a new name; how it went comes back with
     /// [`App::renamed`].
     Rename { path: String, name: String },
@@ -541,6 +880,34 @@ pub enum Effect {
     /// Read the partitions for the filesystem page, which has just opened,
     /// telling them with [`App::set_filesystems`].
     ReadFilesystems,
+    /// 读出分区表（名字与大小）。
+    ReadPartitions,
+    /// 把一个分区原样写成镜像文件，并在旁边留一份它的 sha256。
+    DumpImage { name: String, path: std::path::PathBuf },
+    /// 开始录屏：文件和目录由拿到它的那一层建好。
+    RecordStart,
+    /// 停止录屏，把文件收好。
+    RecordStop,
+    /// 暂停或继续这一段。
+    RecordPause(bool),
+    /// 读出放镜像的几处里各有哪些镜像，告诉页面用
+    /// [`App::set_images`](crate::app::App::set_images)。
+    FindImages { storage: bool, usb: bool },
+    /// 把一份镜像写回它的分区（先整份核对），写完告诉页面用
+    /// [`App::image_restored`](crate::app::App::image_restored)。
+    RestoreImage { place: Place, file: String, partition: String, sha256: Option<String> },
+    /// 把一份镜像连同它的校验删掉，告诉页面用
+    /// [`App::image_deleted`](crate::app::App::image_deleted)。
+    DeleteImageBackup { place: Place, file: String },
+    /// 把当前槽位的 vbmeta 留一份到 `place`，说完用
+    /// [`App::vbmeta_kept`](crate::app::App::vbmeta_kept)。
+    KeepVbmeta(Place),
+    /// 把 `place` 里留着的那份写回，说完用
+    /// [`App::vbmeta_restored`](crate::app::App::vbmeta_restored)。
+    RestoreVbmeta { place: Place, name: String },
+    /// 读出留着的那几份 vbmeta，给页面用
+    /// [`App::set_vbmeta_copies`](crate::app::App::set_vbmeta_copies)。
+    FindVbmeta { storage: bool, usb: bool },
     /// Do `action` to the filesystem page's partition by its name, telling
     /// how it goes with [`App::part_work_started`], [`App::part_listed`],
     /// [`App::part_at`], [`App::part_ended`] and [`App::part_work_ended`];
@@ -551,6 +918,12 @@ pub enum Effect {
     /// folder of their own in internal storage or the temporary folder,
     /// saying where with [`App::report`].
     ExportLogs { recovery: bool, kernel: bool, storage: bool },
+    /// 把布局写进存储，读回存储里的布局，以及从某一条路径导入（2026-11-27）。
+    ExportLayout,
+    ReadLayouts,
+    ImportLayout { path: String },
+    /// 把布局写到指定的那个目录里（2026-11-27）。
+    ExportLayoutTo { path: String },
     /// Back up the parts ticked, by their place in [`BACKUP_PARTS`], into
     /// a folder of their own in `place`, telling how it goes with
     /// [`App::backup_started`], [`App::backup_plan`], [`App::backup_at`]
@@ -571,10 +944,37 @@ pub enum Effect {
     ReadUpdate,
     /// Turn the WLAN on or off; how it stands comes back with
     /// [`App::set_wlan`].
+    /// Keep the screen lock that opens the user's files, or stop keeping it.
+    Remember(bool),
+    /// Serve the folder the file manager shows on the network, or stop.
+    Serve(bool),
+    /// Take `url` into Downloads, and stop the one under way.
+    Fetch(String),
+    StopFetch,
+    /// Keep the file manager's order for the starts that follow.
+    KeepSort(SortKey, bool, bool),
+    /// 控制中心的磁贴摆法：摆着哪些、按什么顺序。
+    KeepTiles(Vec<Tile>),
+    /// Read verified boot's checks in the slot the phone runs from.
+    AvbRead,
+    /// Write both checks as the page has them.
+    AvbSet(bool, bool),
     Wlan(bool),
+    /// Keep the WLAN open as the recovery starts, or stop keeping it so.
+    WlanAuto(bool),
+    /// Keep the password of the network joined last, or forget it.
+    WlanKeep(bool),
     ScanWlan,
     JoinWlan { ssid: Vec<u8>, name: String, security: Security, password: Secret },
+    /// 连名单里记住的那一张：密码不在页面上，从 /metadata 那份名单里取。
+    JoinKept { ssid: Vec<u8>, name: String, security: Security },
+    /// 把记住的那一张从名单里删掉（密码一起）。
+    ForgetKept { ssid: Vec<u8> },
     LeaveWlan,
+    /// 手动 IPv4 生效：不走 DHCP。2026-11-27。
+    WlanStatic { address: std::net::Ipv4Addr, mask: std::net::Ipv4Addr, gateway: std::net::Ipv4Addr, dns: Vec<std::net::Ipv4Addr> },
+    /// 改回 DHCP。
+    WlanDhcp,
     /// Ask the update server for the newest system, telling what it
     /// answered with [`App::update_checked`].
     CheckUpdate,
@@ -597,6 +997,10 @@ pub enum Effect {
 
 enum Drag {
     Idle,
+    /// 拖着录屏的计时胶囊走：`grab` 是按下时手指在胶囊里的位置，`moved` 记
+    /// 这一次是不是真的挪过（挪过就不算按了按钮），`dot` 是按下时落在暂停的
+    /// 那一下上，`stop` 是落在右边的结束方块上。
+    RecordPill { grab: (f32, f32), moved: bool, dot: bool, stop: bool },
     /// Finger down and not yet past the touch slop. `edge` is set when the
     /// press began at a screen edge (true for the left one).
     /// `at` is when it came down: held long enough over an entry of the file
@@ -611,6 +1015,10 @@ enum Drag {
     /// threshold, lifting goes back.
     Edge { start: f32, from_left: bool, armed: bool, x: f32, cy: f32 },
     Slider(Slider, Rect),
+    /// Pulling the control centre: where it began, and how far out it was then.
+    Shade { start: f32, from: f32 },
+    /// 拖着控制中心里的一枚磁贴走，换它摆的位置。
+    TileDrag(TileDrag),
     Confirm { which: Confirm, track: Rect, grab: f32 },
     /// Scrolling a terminal's screen back through what the shell wrote, or
     /// the editor's text, `carry` being the part of a row not yet scrolled.
@@ -647,6 +1055,9 @@ enum Press {
     /// its track at `track` from `at` while the key is held; let go once
     /// it has slid far enough, the control confirms.
     Slide { which: Confirm, track: Rect, at: u64 },
+    /// 屏亮着、又没按在任何控件上时按住电源键：按住够久就呼出重启菜单，
+    /// 早点松手还是息屏（2026-11-24 要的「长按电源键出重启菜单」）。
+    PowerHold { at: u64 },
     /// Done with: nothing more comes of it until it is let go.
     Spent,
 }
@@ -762,6 +1173,22 @@ const REPEAT_MS: u64 = 50;
 /// the two waits this long, or until it is let go, before it does what it
 /// does alone.
 const CHORD_MS: u64 = 150;
+
+/// How long the ring about the sign on the decrypt page takes to turn once.
+const RING_MS: u64 = 1500;
+
+/// How much of the bar on the decrypt page a millisecond of waiting puts in: it
+/// runs its whole length in about two and a half seconds -- about as long as
+/// the phone's own parts take to come up -- and waits there, full, until the
+/// opening is done. What it says is how long the page has been at the work, not
+/// how much of the work is behind, so a page that is waiting is never shown
+/// standing still.
+///
+/// It was 0.00017, which filled the bar in about six seconds, for parts that
+/// took 5.5 s to come up. The directory was made to start again by hand rather
+/// than through init's restart, which took 3.6 s out of that, and the bar was
+/// left filling for a wait that no longer existed: it was a little over a third
+/// of the way along when the page went (2026-11-15).
 /// How far along its track the knob of a swipe-to-confirm control has to
 /// be let go to confirm.
 const SLID: f32 = 0.9;
@@ -1056,11 +1483,187 @@ fn keyboard_strip(t: &Theme, frame: &Frame) -> (Canvas, i32) {
     (strip, top)
 }
 
+/// How far the control centre has to be pulled, in dp, for it to stay open
+/// once let go, and how long its settling takes.
+const SHADE_PULL_DP: f32 = 110.0;
+const SHADE_PERIOD: f32 = 1.8;
+/// The share of the pull past which letting go opens the sheet.
+const SHADE_KEEPS: f32 = 0.36;
+/// How tall the control centre's sheet is, in dp, at full pull: the row of
+/// round tiles, the two capsules, the phone's own status card under them, and
+/// the rounded foot with the grabber. The round buttons take one row where the
+/// 2×2 cards took two, which the status card then fills (2026-11-19).
+///
+/// 摆几枚由用户说了算，所以这高度按行数算，不再是个定数（2026-11-22）：
+/// 只摆四枚就只占一行，面板跟着收，底下不留一大片空。
+///
+/// 编辑时底下要多摆一段「添加磁贴」和「完成」，`editing` 一起算进来。
+fn shade_height(t: &Theme, tiles: usize, editing: bool) -> f32 {
+    let m = &t.m;
+    let rows = tiles.div_ceil(4);
+    let tile_h = m.dp(48.0) + m.dp(26.0);
+    // 128 是时间与日期占的那一段；38 是状态卡底下的余量。
+    let base = m.dp(128.0) + rows as f32 * tile_h + m.dp(18.0) + m.dp(46.0) + m.dp(16.0) + m.dp(72.0) + m.dp(38.0);
+    if !editing {
+        return base;
+    }
+    // 编辑时设备状态卡之后：一行标题 + 候选磁贴（一排六个），最后留一点空。
+    let add_rows = (TILES.len().saturating_sub(tiles)).div_ceil(6).max(1);
+    base + m.dp(54.0) + add_rows as f32 * (m.dp(32.0) + m.dp(24.0)) + m.dp(22.0)
+}
+
+/// What a finger can press in the control centre.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ShadeHit {
+    /// 摆着的某一枚磁贴，按 [`Tile`] 认。
+    Tile(Tile),
+    /// 编辑时圆钮右上角那个叉：把这枚拿下来。
+    TileRemove(Tile),
+    /// 「添加磁贴」里的一枚：把它摆上去。
+    TileAdd(Tile),
+    /// 编辑完，收起来。
+    TilesDone,
+    /// 右上角那支笔：进编辑态。平常它是唯一的入口，磁贴不再靠长按。
+    TilesEdit,
+    Brightness,
+    Vibration,
+}
+
+/// 控制中心那一格格磁贴的位置：格宽、圆钮直径、一格多高、第一排的顶。
+///
+/// 画和接手指都用它算，两处才对得上（2026-11-19 那回命中矩形全落在第一行，
+/// 就是各算各的）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct TileGrid {
+    pub left: f32,
+    pub top: f32,
+    pub cell: f32,
+    pub dia: f32,
+    pub row_h: f32,
+}
+
+impl TileGrid {
+    /// 面板拉开到 `sheet_top` 处时，磁贴从哪儿排起。
+    pub(super) fn of(t: &Theme, sheet_top: f32) -> Self {
+        let m = &t.m;
+        let dia = m.dp(48.0);
+        TileGrid {
+            left: m.margin,
+            top: sheet_top + m.dp(128.0),
+            cell: (m.w as f32 - m.margin * 2.0) / 4.0,
+            dia,
+            row_h: dia + m.dp(26.0),
+        }
+    }
+
+    /// 第 `i` 枚磁贴圆钮的中心。
+    pub(super) fn centre(&self, i: usize) -> (f32, f32) {
+        let (col, line) = (i % 4, i / 4);
+        (self.left + self.cell * (col as f32 + 0.5), self.top + line as f32 * self.row_h + self.dia / 2.0)
+    }
+
+    /// 第 `i` 枚磁贴接手指的那一块。
+    pub(super) fn rect(&self, i: usize) -> Rect {
+        let (col, line) = (i % 4, i / 4);
+        Rect::new(self.left + col as f32 * self.cell, self.top + line as f32 * self.row_h, self.cell, self.row_h)
+    }
+
+    /// 最后一列圆钮看得见的那条右边：一格比圆钮宽，圆钮在格子里居中，
+    /// 所以它比格边往里缩半个 (cell - dia)。「完成」这类跟磁贴对齐的东西
+    /// 要对的是这条边，不是格边（2026-11-22）。
+    pub(super) fn right_edge(&self) -> f32 {
+        self.left + self.cell * 4.0 - (self.cell - self.dia) / 2.0
+    }
+
+    /// 屏幕上这一点最靠近 `n` 枚里的第几格。
+    pub(super) fn slot(&self, x: f32, y: f32, n: usize) -> usize {
+        if n == 0 {
+            return 0;
+        }
+        let col = (((x - self.left) / self.cell).floor().max(0.0) as usize).min(3);
+        let line = ((y - self.top) / self.row_h).floor().max(0.0) as usize;
+        (line * 4 + col).min(n - 1)
+    }
+}
+
+/// 手指拖着的那一枚磁贴：它自己、手指现在在哪儿、它在列表里占第几格。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct TileDrag {
+    pub tile: Tile,
+    pub x: f32,
+    pub y: f32,
+    pub at: usize,
+}
+
+/// What a locked screen holds: when the panel went dark, and how far the knob
+/// has been slid along.
+struct Lock {
+    since: u64,
+    drag: f32,
+    /// Whether the finger went down on the knob rather than elsewhere.
+    held: bool,
+}
+
+/// How much of the track the knob must reach for the lock to give way.
+const UNLOCK_AT: f32 = 0.96;
+
+/// How long the power key is held for the reboot page to open (screen lit), and on the lock.
+const POWER_HOLD_MS: u64 = 1000;
+
+/// How close together two taps on the dark panel have to be for it to light.
+const DOUBLE_TAP_MS: u64 = 600;
+
+/// 录屏那枚胶囊上一帧画在哪儿：整枚、左边暂停/继续那一下、右边结束那一下。
+/// 手指按下时按这几个矩形认，拖动只认整枚。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Pill {
+    pub body: Rect,
+    pub dot: Rect,
+    pub stop: Rect,
+}
+
 pub struct App {
+    /// The two answers the place question offers, where they were drawn.
+    pub(super) place_hits: Vec<(crate::geom::Rect, Action)>,
     pub state: State,
     /// The pages open, the one shown last: each with how far it is
     /// scrolled and where the keys are on it.
     stack: Vec<(Screen, f32, Focus)>,
+    /// The lock over the page once the panel went dark, until its knob is slid
+    /// along; and when the power key went down on it.
+    lock: Option<Lock>,
+    lock_press: Option<u64>,
+    /// Where the lock's knob was last drawn, which is where a finger finds it,
+    /// and when the dark panel was last tapped.
+    lock_rect: Option<Rect>,
+    tap_at: Option<u64>,
+    /// The control centre: how far it is pulled out, the pull it settles from,
+    /// the finger that started it, and what can be pressed on it.
+    /// The card asking to delete, and the swipe on it, as last drawn: a finger
+    /// finds them where they are, not where the page has scrolled to.
+    asking: Option<(Rect, Confirm)>,
+    asking_track: Option<Rect>,
+    shade: f32,
+    /// Where a finger that came down near the top edge started: it becomes a
+    /// pull only once it moves down, so a tap up there still reaches the page.
+    shade_from: Option<f32>,
+    shade_settle: Option<(u64, f32, f32, f32, f32)>,
+    shade_last: Option<(u64, f32)>,
+    shade_speed: f32,
+    shade_press: Option<(ShadeHit, f32)>,
+    shade_hits: Vec<(Rect, ShadeHit)>,
+    /// 控制中心在编辑：磁贴能拖、能拿下来，底下列出还没摆的。
+    pub shade_editing: bool,
+    /// 编辑时还留着的那枚磁贴：松手就落进它该在的格子。
+    shade_drag: Option<TileDrag>,
+    /// 录屏胶囊上一帧画在哪儿。
+    pub(super) record_pill: Option<Pill>,
+    /// 控制中心那一行「时间 + 日期」里日期从哪儿起、墨迹顶到哪儿：
+    /// 录屏胶囊摆在它正上方。
+    pub(super) shade_date: Option<(f32, f32)>,
+    /// When to take the screenshot a tile asked for, once the page under the
+    /// sheet has been drawn without it.
+    shot_when: Option<u64>,
     frame: Option<Frame>,
     /// The controls of the page drawn, in the order the keys go through
     /// them.
@@ -1094,7 +1697,7 @@ pub struct App {
     /// The current page's large and bar titles, for their words and the
     /// theme, with their blurred versions as they are needed. A page can
     /// change its title in place, as work on files does once it ends.
-    titles: Option<((&'static str, bool), Blurs, Blurs)>,
+    titles: Option<((std::borrow::Cow<'static, str>, bool), Blurs, Blurs)>,
     /// The icon and words of the current page's folding search bar, for
     /// its words and the theme.
     search_words: Option<((&'static str, bool), Canvas)>,
@@ -1103,6 +1706,8 @@ pub struct App {
     /// The chip behind the round button at the right end of the bar, as
     /// for `<`.
     button_chip: Option<(bool, Canvas, i32, i32)>,
+    /// 顶部栏上那排胶囊画在哪儿，手指按这里就做对应那件事。
+    bar_chip_rects: Vec<(Rect, Action)>,
     /// The folder the terminal page's shell last started in, where Enter
     /// starts it again once it has ended.
     shell_folder: String,
@@ -1122,6 +1727,10 @@ pub struct App {
     /// How far a dragging finger has pulled the page past an end:
     /// negative past the top, positive past the bottom.
     pull: f32,
+    /// When the decrypt page was shown, from which its bar runs: cleared off
+    /// the page, so that the bar runs its length the next time it is shown
+    /// rather than jumping to where it was.
+    data_started: Option<u64>,
     /// The page springing back after being pulled or thrown past an end.
     bounce: Option<Spring>,
     /// The back cue shrinking away after a swipe that did not go back:
@@ -1204,6 +1813,25 @@ impl App {
         App {
             state: State::default(),
             stack: vec![(start, 0.0, Focus::Unset)],
+            lock: None,
+            lock_press: None,
+            lock_rect: None,
+            tap_at: None,
+            asking: None,
+            asking_track: None,
+            place_hits: Vec::new(),
+            shade: 0.0,
+            shade_from: None,
+            shade_settle: None,
+            shade_last: None,
+            shade_speed: 0.0,
+            shade_press: None,
+            shade_hits: Vec::new(),
+            shade_editing: false,
+            shade_drag: None,
+            record_pill: None,
+            shade_date: None,
+            shot_when: None,
             frame: None,
             spots: None,
             // The touchscreen may run from the partitions fastboot leaves
@@ -1221,6 +1849,7 @@ impl App {
             search_words: None,
             chip: None,
             button_chip: None,
+            bar_chip_rects: Vec::new(),
             shell_folder: "/".into(),
             unsaved_warned: None,
             dither: None,
@@ -1230,6 +1859,7 @@ impl App {
             fling: None,
             glide: None,
             pull: 0.0,
+            data_started: None,
             bounce: None,
             cue: None,
             title: title_fade(start == Screen::About),
@@ -1280,6 +1910,21 @@ impl App {
         }
     }
 
+    /// Whether a download asked for on the download page is under way, which
+    /// the page stops rather than starts.
+    pub fn fetching(&self) -> bool {
+        matches!(self.state.fetch, Fetch::Running { .. })
+    }
+
+    /// 首页顶上那个大字：主人起过名字就用它，没起就是页面自带的（2026-11-27）。
+    pub fn home_title(&self) -> &str {
+        if self.state.home_title.is_empty() {
+            crate::pages::HOME_TITLE
+        } else {
+            &self.state.home_title
+        }
+    }
+
     pub fn screen(&self) -> Screen {
         self.top().0
     }
@@ -1315,6 +1960,9 @@ impl App {
                 || self.morph.is_some()
                 || self.turn.is_some()
                 || self.row_press.is_some_and(|p| p.changing(now) || p.gone(now))
+                || self.turning()
+                || self.shade_busy()
+                || self.shot_when.is_some()
                 || self.glowing());
         // The content going dark or coming up, and the charging screen's
         // tide, move a frame at a time while the panel is lit.
@@ -1329,6 +1977,7 @@ impl App {
             _ => None,
         };
         let repeat = match self.button {
+            Some((_, Press::PowerHold { at })) => Some(at + POWER_HOLD_MS),
             Some((_, Press::Volume { next, .. })) => Some(next),
             Some((_, Press::Power { spot: Spot { stop: Stop::Hit(Action::OpenEntry(_)), .. }, at })) => Some(at + LONG_PRESS_MS),
             _ => None,
@@ -1336,6 +1985,25 @@ impl App {
         let blink = self.blink_at(now).filter(|_| self.display_on).map(|(_, next)| next);
         let chord = self.chord.map(|(_, at)| at + CHORD_MS);
         [self.toast.as_ref().map(|t| t.1), easing, self.idle_due(), held, repeat, blink, darkens, chord].into_iter().flatten().min()
+    }
+
+    /// Whether the ring about the sign on the decrypt page is turning, which
+    /// asks the loop for a frame every turn rather than a second apart.
+    fn turning(&self) -> bool {
+        self.display_on && self.screen() == Screen::Decrypt && matches!(self.state.data, Data::Closed | Data::Opening)
+    }
+
+    /// Whether the lock is over the page, waiting for the knob: the panel must
+    /// keep its touch controller awake then, or the taps that would light it
+    /// are never reported.
+    pub fn locked(&self) -> bool {
+        self.lock.is_some()
+    }
+
+    /// Whether the control centre is out, on its way out or being pulled, which
+    /// the loop asks for a frame a turn while.
+    pub fn shade_busy(&self) -> bool {
+        self.shade > 0.0 || self.shade_settle.is_some() || matches!(self.drag, Drag::Shade { .. })
     }
 
     /// Whether a text field's cursor shows at `now`, and when it next turns;
@@ -1362,8 +2030,92 @@ impl App {
     /// deadline goes away.
     pub fn tick(&mut self, now: u64) -> Vec<Effect> {
         let mut fx = Vec::new();
+        // 电源键按住够久：呼出重启菜单（屏幕亮着）；松手太早的那条在 `key_up` 里息屏。
+        if let Some((_, Press::PowerHold { at })) = self.button
+            && now.saturating_sub(at) >= POWER_HOLD_MS
+        {
+            self.button = None;
+            if self.lock.is_none() {
+                self.open(Screen::Reboot);
+                self.refresh();
+                fx.push(Effect::Haptic);
+            }
+            self.dirty = true;
+        }
+        // 录屏时每秒换一次已录时长：页面和状态栏都读这一个串，免得两处各算
+        // 一遍（2026-11-21）。暂停的那一段不算进去，停着的时候秒数不动。
+        if self.state.record.on {
+            let (since, held, paused_at, paused) = {
+                let r = &self.state.record;
+                (r.since, r.held, r.paused_at, r.paused)
+            };
+            let up_to = if paused { paused_at } else { now };
+            let secs = up_to.saturating_sub(since).saturating_sub(held) / 1000;
+            let text = format!("{}:{:02}", secs / 60, secs % 60);
+            if text != self.state.record.elapsed {
+                self.state.record.elapsed = text;
+                self.dirty = true;
+            }
+        }
+        // The control centre, let go, settles into place in one move, easing
+        // out rather than swinging about where it is headed for.
+        if let Some((at, from, _speed, period, target)) = self.shade_settle {
+            let t = now.saturating_sub(at) as f32 / 1000.0;
+            let k = (t / period).clamp(0.0, 1.0);
+            let eased = k * k * (3.0 - 2.0 * k);
+            self.shade = ((target + from * (1.0 - eased)) / SHADE_PULL_DP).clamp(0.0, 1.0);
+            if k >= 1.0 {
+                self.shade_settle = None;
+                self.shade = (target / SHADE_PULL_DP).clamp(0.0, 1.0);
+            }
+            self.dirty = true;
+        }
+        // 面板收到底就把编辑一起收掉：靠「拖回顶部」收起来的那一路不走
+        // close_shade，标记留在那儿，下一次下拉就被当成「编辑中」挡住，
+        // 面板再也拉不下来（2026-11-22 修）。
+        if self.shade <= 0.0 && (self.shade_editing || self.shade_drag.is_some()) {
+            self.shade_editing = false;
+            self.shade_drag = None;
+            self.dirty = true;
+        }
+        // The decrypt page while the partition is being opened, and while it
+        // waits for the phone's own parts to come up: its ring turns every
+        // frame, and its bar runs its length once from the moment the page is
+        // shown.
+        if self.screen() == Screen::Decrypt && matches!(self.state.data, Data::Closed | Data::Opening) {
+            self.state.data_phase = (now % RING_MS) as f32 / RING_MS as f32;
+            let started = *self.data_started.get_or_insert(now);
+            // Nothing is measured any more: the page turns its ring and says
+            // which part of the work it is at, without a bar drawn to a guess.
+            let _ = started;
+            // The frame drawn is the page as it stood: without letting it go,
+            // the ring is drawn once and never turns again.
+            self.frame = None;
+            self.dirty = true;
+        } else {
+            self.data_started = None;
+        }
         // The key waiting for its partner in a screenshot, left alone long
         // enough, does what it does alone.
+        // The sheet goes first, and the shot is taken a few frames later, once
+        // the page under it has been drawn: taken at once, the sheet would be
+        // in it.
+        if let Some(at) = self.shot_when
+            && now >= at
+        {
+            self.shot_when = None;
+            fx.push(Effect::Screenshot { storage: self.state.place_open(Place::Storage) });
+        }
+        // 落空的翻页意图：列表一到就补这一下（点击发生时按键还没画出来）。
+        if let Some(by) = self.state.page_pending.take() {
+            if matches!(self.screen(), Screen::DataApps | Screen::Modules) && matches!(&self.state.apps, Some(Ok(_))) {
+                let action = match self.screen() {
+                    Screen::DataApps => Action::AppPage(by),
+                    _ => Action::ModulePage(by),
+                };
+                fx.extend(self.act(action, now));
+            }
+        }
         if self.chord.is_some_and(|(_, at)| now >= at + CHORD_MS) {
             fx.extend(self.let_chord_go(now));
         }
@@ -1375,6 +2127,14 @@ impl App {
         {
             self.drag = Drag::Held;
             fx.extend(self.held_entry(i));
+        }
+        // 模块长按 = 标记下次启动时移除（再长按一次取消），和 KSU 的做法一致。
+        if let Drag::Press { action: Some(Action::ModuleToggle(i)), at, .. } = self.drag
+            && now >= at + LONG_PRESS_MS
+        {
+            self.drag = Drag::Held;
+            fx.push(Effect::Haptic);
+            fx.extend(self.act(Action::ModuleRemove(i), now));
         }
         if let Some((key, Press::Power { spot: Spot { stop: Stop::Hit(Action::OpenEntry(i)), .. }, at })) = self.button
             && now >= at + LONG_PRESS_MS
@@ -1604,5 +2364,179 @@ impl App {
         self.shown = None;
         self.layer = None;
         self.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod align_tests {
+    //! 翻页按钮与标题的竖直位置：用像素量，不靠眼睛。
+
+    use super::testing::*;
+    use super::{Action, App, Screen};
+
+    #[test]
+    fn 翻页与标题在同一条水平线上() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::DataApps, W, H, PPD);
+        let apps: Vec<super::dataapp::DataApp> = (0..25)
+            .map(|k| super::dataapp::DataApp {
+                package: format!("com.example.app{k}"),
+                dir: format!("/data/app/~~x/com.example.app{k}-y"),
+                label: format!("应用 {k}"),
+                version: String::new(),
+                installed: 0,
+                updated: 0,
+                size: 0,
+                icon: Vec::new(),
+                system: false,
+            })
+            .collect();
+        app.state.apps = Some(Ok(apps));
+        let frame = app.frame(&f, &i);
+        let next = frame.hits.iter().find(|h| h.action == Action::AppPage(1)).expect("a next pill").rect;
+        let t = app.theme();
+        let sprite = crate::widgets::big_title(&t, &f, "应用管理");
+        let mut first = None;
+        let mut last = 0;
+        for row in 0..sprite.h as usize {
+            let covered = (0..sprite.w as usize).any(|col| sprite.cov[row * sprite.w as usize + col] > 8);
+            if covered {
+                first.get_or_insert(row);
+                last = row;
+            }
+        }
+        let ink = sprite.y + (first.unwrap_or(0) as f32 + last as f32) / 2.0;
+        let pill = next.centre().1;
+        println!("标题墨迹中心 {ink:.1}，翻页按钮中心 {pill:.1}，差 {:.1}", pill - ink);
+        assert!((pill - ink).abs() <= 6.0, "翻页与标题应当在同一条水平线上，差 {:.1}px", pill - ink);
+    }
+
+    #[test]
+    fn 点一次下一页就翻一页() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::DataApps, W, H, PPD);
+        let apps: Vec<super::dataapp::DataApp> = (0..25)
+            .map(|k| super::dataapp::DataApp {
+                package: format!("com.example.app{k}"),
+                dir: format!("/data/app/~~x/com.example.app{k}-y"),
+                label: format!("应用 {k}"),
+                version: String::new(),
+                installed: 0,
+                updated: 0,
+                size: 0,
+                icon: Vec::new(),
+                system: false,
+            })
+            .collect();
+        app.state.apps = Some(Ok(apps));
+        for want in [1usize, 2] {
+            tap(&mut app, &f, &i, Action::AppPage(1));
+            assert_eq!(app.state.app_page, want, "点一次翻一页");
+        }
+    }
+
+    #[test]
+    fn 三个翻页控件不互相压住() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::DataApps, W, H, PPD);
+        let apps: Vec<super::dataapp::DataApp> = (0..90)
+            .map(|k| super::dataapp::DataApp {
+                package: format!("com.example.app{k}"),
+                dir: format!("/data/app/~~x/com.example.app{k}-y"),
+                label: format!("应用 {k}"),
+                version: String::new(),
+                installed: 0,
+                updated: 0,
+                size: 0,
+                icon: Vec::new(),
+                system: false,
+            })
+            .collect();
+        app.state.apps = Some(Ok(apps));
+        app.state.app_page = 4;
+        let fr = app.frame(&f, &i);
+        let prev = fr.hits.iter().find(|h| h.action == Action::AppPage(-1)).expect("prev").rect;
+        let next = fr.hits.iter().find(|h| h.action == Action::AppPage(1)).expect("next").rect;
+        let t = app.theme();
+        println!("m.w={} margin={:.1} 上一页 {:?}  下一页 {:?}", t.m.w, t.m.margin, prev, next);
+        assert!(prev.x + prev.w < next.x, "上一页不能压到下一页：{:?} / {:?}", prev, next);
+    }
+
+    #[test]
+    fn 翻页按钮的位置不随页码变() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::DataApps, W, H, PPD);
+        let apps: Vec<super::dataapp::DataApp> = (0..30)
+            .map(|k| super::dataapp::DataApp {
+                package: format!("com.example.app{k}"),
+                dir: format!("/data/app/~~x/com.example.app{k}-y"),
+                label: format!("应用 {k}"),
+                version: String::new(),
+                installed: 0,
+                updated: 0,
+                size: 0,
+                icon: Vec::new(),
+                system: false,
+            })
+            .collect();
+        app.state.apps = Some(Ok(apps));
+        let first = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::AppPage(1)).expect("next on page 1").rect;
+        app.state.app_page = 1;
+        let second = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::AppPage(1)).expect("next on page 2").rect;
+        assert_eq!(first, second, "「下一页」不能在翻页后挪位置");
+
+        // 模块页同样。
+        let mut m = App::new(Screen::Modules, W, H, PPD);
+        let mods: Vec<super::ModuleRow> = (0..20)
+            .map(|k| super::ModuleRow {
+                id: format!("m{k}"),
+                name: format!("模块 {k}"),
+                note: "v1".into(),
+                about: String::new(),
+                enabled: true,
+                removing: false,
+                pending: false,
+            })
+            .collect();
+        m.state.modules = Some(Ok(mods));
+        let a = m.frame(&f, &i).hits.iter().find(|h| h.action == Action::ModulePage(1)).expect("next on page 1").rect;
+        m.state.module_page = 1;
+        let b = m.frame(&f, &i).hits.iter().find(|h| h.action == Action::ModulePage(1)).expect("next on page 2").rect;
+        assert_eq!(a, b, "模块页的「下一页」也不能挪位置");
+    }
+
+    #[test]
+    fn 模块页的翻页也在标题那条线上() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Modules, W, H, PPD);
+        let mods: Vec<super::ModuleRow> = (0..16)
+            .map(|k| super::ModuleRow {
+                id: format!("m{k}"),
+                name: format!("模块 {k}"),
+                note: "v1.0".into(),
+                about: String::new(),
+                enabled: true,
+                removing: false,
+                pending: false,
+            })
+            .collect();
+        app.state.modules = Some(Ok(mods));
+        let frame = app.frame(&f, &i);
+        let next = frame.hits.iter().find(|h| h.action == Action::ModulePage(1)).expect("a next pill").rect;
+        let t = app.theme();
+        let sprite = crate::widgets::big_title(&t, &f, "模块管理");
+        let mut first = None;
+        let mut last = 0;
+        for row in 0..sprite.h as usize {
+            let covered = (0..sprite.w as usize).any(|col| sprite.cov[row * sprite.w as usize + col] > 8);
+            if covered {
+                first.get_or_insert(row);
+                last = row;
+            }
+        }
+        let ink = sprite.y + (first.unwrap_or(0) as f32 + last as f32) / 2.0;
+        let pill = next.centre().1;
+        println!("模块页：标题墨迹中心 {ink:.1}，翻页按钮中心 {pill:.1}，差 {:.1}", pill - ink);
+        assert!((pill - ink).abs() <= 6.0, "模块页的翻页也应当在标题那条线上，差 {:.1}px", pill - ink);
     }
 }

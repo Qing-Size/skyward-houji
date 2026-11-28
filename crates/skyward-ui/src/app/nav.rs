@@ -109,6 +109,12 @@ impl App {
                 // Leaving the file manager puts a picked entry down.
                 self.state.clip = None;
             }
+            Screen::FilesOtg => {
+                if let Some(up) = self.state.otg.up() {
+                    return vec![Effect::ReadOtg(up)];
+                }
+                self.state.clip = None;
+            }
             Screen::Choose(place) => {
                 if let Some(up) = self.state.folder(Screen::Choose(place)).up() {
                     return vec![Effect::ReadPlace(place, up)];
@@ -179,17 +185,15 @@ impl App {
             }
             // The page stays while Skyward is updated: once downloaded, the
             // build is written at once, which nothing may cut short.
-            Screen::SkywardUpdate => match self.state.skyward_job.as_ref().filter(|j| j.outcome.is_none()).map(|j| j.stage) {
-                Some(Some(SkywardStage::Write { .. })) => {
+            Screen::SkywardUpdate => {
+                if matches!(
+                    self.state.skyward_job.as_ref().filter(|j| j.outcome.is_none()).map(|j| j.stage),
+                    Some(Some(SkywardStage::Write { .. }))
+                ) {
                     self.say(l.pick(texts::toast::back::WRITING), now);
                     return fx;
                 }
-                Some(_) => {
-                    self.say(l.pick(WAIT_OR_STOP), now);
-                    return fx;
-                }
-                None => {}
-            },
+            }
             // A restore that has begun writing cannot be stopped.
             Screen::BackupJob => {
                 let job = self.state.backup_job.as_ref().expect("the backup page shows work");
@@ -285,11 +289,87 @@ impl App {
     pub(super) fn arrive_at(&mut self, s: Screen) -> Vec<Effect> {
         match s {
             Screen::Mount => vec![Effect::ReadMounts],
+            // Root 的页与它的三页进来就把现状读一遍：KernelSU、Magisk、模块。
+            Screen::Root => {
+                let mut fx = vec![Effect::ReadKernelSu, Effect::ReadMagisk];
+                if self.state.latest_kernelsu.is_none() {
+                    fx.push(Effect::ReadRootLatest);
+                }
+                if self.state.modules.is_none() {
+                    fx.push(Effect::ReadModules);
+                }
+                fx
+            }
+            Screen::KernelSu => {
+                self.state.kernel_su = None;
+                self.state.kernel_su_job = None;
+                let mut fx = vec![Effect::ReadKernelSu];
+                if self.state.latest_kernelsu.is_none() {
+                    fx.push(Effect::ReadRootLatest);
+                }
+                fx
+            }
+            Screen::KernelSuKmi => vec![Effect::ReadKernelSu],
+            Screen::Magisk => {
+                self.state.magisk = None;
+                self.state.magisk_job = None;
+                let mut fx = vec![Effect::ReadMagisk];
+                if self.state.latest_magisk.is_none() {
+                    fx.push(Effect::ReadRootLatest);
+                }
+                fx
+            }
+            Screen::DataAppInfo => {
+                self.state.app_confirm = None;
+                Vec::new()
+            }
+            Screen::SystemApps => {
+                self.state.sys_page = 0;
+                // 每次都重读停用状态（可能刚在系统里改过），列表只第一次读。
+                let mut fx = vec![Effect::ReadAppStates];
+                if self.state.sys_apps.is_none() {
+                    fx.push(Effect::ReadSystemApps);
+                }
+                fx
+            }
+            Screen::DataApps => {
+                // 只在第一次进来时读；之后再进直接用记下的列表，不再扫一遍。
+                // 一进来就扫，会让人觉得"每次都在加载、点了没反应"（2026-11-18）。
+                self.state.app_arrivals += 1;
+                if matches!(self.state.apps, Some(Ok(_))) {
+                    Vec::new()
+                } else {
+                    vec![Effect::ReadDataApps]
+                }
+            }
+            Screen::Modules => {
+                self.state.modules = None;
+                self.state.module_page = 0;
+                vec![Effect::ReadModules]
+            }
             Screen::Filesystems => vec![Effect::ReadFilesystems],
+            // Opening the page reads the charger, so it says what the phone is
+            // taking rather than what it was taking when last looked at.
+            Screen::Charge => vec![Effect::ChargeWatch],
+            Screen::Layout => vec![Effect::ReadLayouts],
+            Screen::LayoutBrowse => vec![Effect::ReadDir(self.state.layout_dir.path.clone())],
+            Screen::Partitions => {
+                self.state.dump_pick = None;
+                vec![Effect::ReadPartitions]
+            }
+            Screen::ImageBackup => {
+                self.state.dump_pick = None;
+                self.state.image_pick = None;
+                self.state.image_action = ImageAction::Restore;
+                self.state.confirm = 0.0;
+                let (storage, usb) = self.image_places();
+                vec![Effect::ReadPartitions, Effect::FindImages { storage, usb }]
+            }
             Screen::Slot | Screen::Reboot => vec![Effect::ReadSlots],
             Screen::Systems => vec![Effect::ReadSystems],
             Screen::Restore => vec![self.find_backups()],
             Screen::Files => vec![Effect::ReadDir(self.state.files.path.clone())],
+            Screen::FilesOtg => vec![Effect::ReadOtg(self.state.otg.path.clone())],
             Screen::Choose(place) if self.state.place_open(place) => vec![Effect::ReadPlace(place, self.state.folder(s).path.clone())],
             Screen::Search => {
                 self.state.search.clear();
@@ -354,7 +434,9 @@ mod tests {
         app.touch(Touch::Move(700.0, 2200.0), &f, 0);
         app.touch(Touch::Move(700.0, 2100.0), &f, 0);
         app.touch(Touch::Up, &f, 0);
-        assert_eq!(app.top().1, 300.0);
+        // 设置页去掉 USB 那块之后短了，滚到头就是 215。
+        assert_eq!(app.top().1, app.max_scroll());
+        app.tick(1000);
         tap_back(&mut app, &f, &i, 0);
         assert_eq!(app.screen(), Screen::Home);
     }
@@ -362,12 +444,16 @@ mod tests {
     #[test]
     fn a_page_opened_slides_in_over_the_page_it_opens_from_and_back_off_it() {
         let (f, i) = (fonts(), info());
+        // 分区管理默认在首页「其他」；让高级页先显示它，从这里起滑（2026-11-27）。
         let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.home_sections.iter_mut().for_each(|s| s.collapsed = false);
+        app.state.home_rest_collapsed = false;
+        app.refresh();
         let mut c = Canvas::new(W, H);
         app.compose(&mut c, &f, &i, "12:00", 0);
         let home = shot(&c);
-        tap_at(&mut app, &f, &i, Action::Open(Screen::Mount), 1000);
-        assert_eq!(app.screen(), Screen::Mount);
+        tap_at(&mut app, &f, &i, Action::Open(Screen::Partitions), 1000);
+        assert_eq!(app.screen(), Screen::Partitions);
         assert_eq!(app.deadline(1000), Some(0), "it slides frame by frame");
         // The slide sets off with its first frame, the page opened still
         // past the right edge.
@@ -387,7 +473,7 @@ mod tests {
         assert!((front as f32 / W as f32 - 0.728).abs() < 0.01, "about three quarters of the way in after 50 ms: {front}");
 
         tap_back(&mut app, &f, &i, 4000);
-        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.screen(), Screen::Home, "back to the page it opened from");
         app.compose(&mut c, &f, &i, "12:00", 4000);
         let first = shot(&c);
         app.compose(&mut c, &f, &i, "12:00", 4060);
@@ -405,11 +491,14 @@ mod tests {
     fn a_page_sliding_has_its_leading_corners_rounded_as_the_screens_are() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.home_sections.iter_mut().for_each(|s| s.collapsed = false);
+        app.state.home_rest_collapsed = false;
+        app.refresh();
         app.set_screen_corners(140.0);
         let mut c = Canvas::new(W, H);
         app.compose(&mut c, &f, &i, "12:00", 0);
         let home = shot(&c);
-        tap_at(&mut app, &f, &i, Action::Open(Screen::Mount), 1000);
+        tap_at(&mut app, &f, &i, Action::Open(Screen::Partitions), 1000);
         app.compose(&mut c, &f, &i, "12:00", 1000);
         app.compose(&mut c, &f, &i, "12:00", 1050);
         let mid = shot(&c);
@@ -426,10 +515,14 @@ mod tests {
     #[test]
     fn a_finger_brings_a_sliding_page_to_rest_and_a_page_never_shown_gives_way_at_once() {
         let (f, i) = (fonts(), info());
+        // 分区管理默认在首页「其他」；让高级页先显示它（2026-11-27）。
         let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.home_sections.iter_mut().for_each(|s| s.collapsed = false);
+        app.state.home_rest_collapsed = false;
+        app.refresh();
         let mut c = Canvas::new(W, H);
         app.compose(&mut c, &f, &i, "12:00", 0);
-        tap_at(&mut app, &f, &i, Action::Open(Screen::Mount), 1000);
+        tap_at(&mut app, &f, &i, Action::Open(Screen::Partitions), 1000);
         app.compose(&mut c, &f, &i, "12:00", 1000);
         app.touch(Touch::Down(W as f32 / 2.0, H as f32 / 2.0), &f, 1030);
         assert!(app.turn.is_none(), "a finger brings it to rest");
@@ -439,24 +532,22 @@ mod tests {
         // stands: what replaces it shows at once.
         app.refresh();
         tap_back(&mut app, &f, &i, 2000);
-        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.screen(), Screen::Home, "back to the page it opened from");
         assert!(app.turn.is_none());
     }
 
     #[test]
     fn every_unfinished_entry_now_opens_its_page() {
         let (f, i) = (fonts(), DeviceInfo { slot: Some(Slot::B), ..info() });
-        let routes: [(Screen, Screen); 13] = [
-            (Screen::Home, Screen::Search),
+        let routes: [(Screen, Screen); 10] = [
             (Screen::Home, Screen::Backup),
             (Screen::Home, Screen::Restore),
-            (Screen::Home, Screen::Advanced),
-            (Screen::Advanced, Screen::Files),
-            (Screen::Advanced, Screen::Terminal),
-            (Screen::Advanced, Screen::Logs),
+            (Screen::Home, Screen::Files),
+            // 终端与日志默认搬到了首页「其他」（2026-11-27）。
+            (Screen::Home, Screen::Terminal),
+            (Screen::Home, Screen::Logs),
             (Screen::Settings, Screen::Language),
             (Screen::Settings, Screen::TimeZone),
-            (Screen::Settings, Screen::Terminal),
             (Screen::About, Screen::Logs),
             (Screen::Specs, Screen::License),
             (Screen::Specs, Screen::FontLicense),

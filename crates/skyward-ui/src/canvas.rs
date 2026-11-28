@@ -1010,13 +1010,39 @@ impl Canvas {
         let sf = face.font.as_scaled(scale);
         let mut w = 0.0;
         let mut prev: Option<GlyphId> = None;
-        for ch in text.chars() {
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let ch = chars[i];
+            if joining(ch) {
+                i += 1;
+                continue;
+            }
+            // 两面旗是两个区域指示符拼出来的，算一个字的宽。
+            if let Some(art) = flag_art(face, &chars, i, px) {
+                w += art.advance;
+                prev = None;
+                i += 2;
+                continue;
+            }
+            if crate::emoji::regional(ch) {
+                // 单一个区域指示符不成图形，界面字体里也只会是方框：不占位。
+                i += 1;
+                continue;
+            }
+            if let Some(art) = face.emoji_art(ch, px) {
+                w += art.advance;
+                prev = None;
+                i += 1;
+                continue;
+            }
             let (id, advance) = face.glyph(ch, scale);
             if let Some(p) = prev {
                 w += sf.kern(p, id);
             }
             w += advance;
             prev = Some(id);
+            i += 1;
         }
         w
     }
@@ -1060,7 +1086,40 @@ impl Canvas {
         let chars: Vec<char> = text.chars().collect();
         let mut pen = x;
         let mut prev: Option<GlyphId> = None;
-        for (i, &ch) in chars.iter().enumerate() {
+        let mut i = 0;
+        while i < chars.len() {
+            let ch = chars[i];
+            if joining(ch) {
+                i += 1;
+                continue;
+            }
+            // 两面旗与 emoji 都是彩色的小图，不是轮廓：UI 字体里没有它们的形状。
+            let flag = flag_art(face, &chars, i, px);
+            let single = flag.is_none().then(|| face.emoji_art(ch, px)).flatten();
+            if let Some(art) = flag.clone().or(single) {
+                if let Some(lim) = limit {
+                    let more = i + 1 < chars.len();
+                    if pen + art.advance + if more { ell_w } else { 0.0 } > lim {
+                        self.glyph(face, ell, scale, pen, baseline, ink);
+                        pen += ell_w;
+                        watched(|w| {
+                            w.cut.insert(text.to_string());
+                        });
+                        break;
+                    }
+                }
+                let (at_x, at_y) = ((pen + art.dx as f32).round() as i32, (baseline + art.dy as f32).round() as i32);
+                self.lay(&art.canvas, at_x, at_y, 1.0);
+                pen += art.advance;
+                prev = None;
+                i += if flag.is_some() { 2 } else { 1 };
+                continue;
+            }
+            if crate::emoji::regional(ch) {
+                // 单一个区域指示符：界面字体里只是个方框，不画也不占位。
+                i += 1;
+                continue;
+            }
             let (id, aw) = face.glyph(ch, scale);
             if let Some(p) = prev {
                 pen += sf.kern(p, id);
@@ -1079,6 +1138,7 @@ impl Canvas {
             self.glyph(face, id, scale, pen, baseline, ink);
             pen += aw;
             prev = Some(id);
+            i += 1;
         }
         watched(|w| {
             let (text, canvas) = (text.to_string(), (self.w, self.h));
@@ -1451,3 +1511,18 @@ mod tests {
     }
 }
 
+/// 从 `chars[i]` 起的两个区域指示符拼成的那面旗，若不是旗就是 `None`。
+fn flag_art(face: &Face, chars: &[char], i: usize, px: f32) -> Option<std::rc::Rc<crate::emoji::Art>> {
+    let first = *chars.get(i)?;
+    let second = *chars.get(i + 1)?;
+    if !crate::emoji::regional(first) || !crate::emoji::regional(second) {
+        return None;
+    }
+    face.emoji_flag(first, second, px)
+}
+
+/// 组合用的控制字符：变体选择符（U+FE0E / U+FE0F）、零宽连接符（U+200D）和键帽
+/// 的合成符（U+20E3）自己不占位，也不该被当成豆腐块画出来。
+fn joining(ch: char) -> bool {
+    matches!(ch, '\u{fe0e}' | '\u{fe0f}' | '\u{200d}' | '\u{20e3}')
+}

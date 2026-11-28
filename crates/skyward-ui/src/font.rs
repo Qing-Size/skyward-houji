@@ -11,6 +11,8 @@ pub struct Face {
     pub(crate) font: FontRef<'static>,
     upem: f32,
     height: f32,
+    /// 这台手机的 emoji 字体，文字里遇到 emoji 时向它要图；几份字重共用一份。
+    pub(crate) emoji: Rc<crate::emoji::Slot>,
     /// What drawing text in the face has worked out, kept: outlining a
     /// glyph of a variable font, its points moved for the weight, and
     /// rasterizing it cost more than all else a page draws.
@@ -48,13 +50,25 @@ struct Known {
 }
 
 impl Face {
-    fn new(data: &'static [u8], index: u32, weight: f32) -> Result<Self> {
+    fn new(data: &'static [u8], index: u32, weight: f32, emoji: Rc<crate::emoji::Slot>) -> Result<Self> {
         let mut font =
             FontRef::try_from_slice_and_index(data, index).map_err(|e| anyhow!("parse font: {e}"))?;
         font.set_variation(b"wght", weight);
         let upem = font.units_per_em().ok_or_else(|| anyhow!("font has no units-per-em"))?;
         let height = font.height_unscaled();
-        Ok(Face { font, upem, height, known: RefCell::new(Known::default()) })
+        Ok(Face { font, upem, height, emoji, known: RefCell::new(Known::default()) })
+    }
+
+    /// The picture of `ch` at `px`, where this phone's emoji typeface draws one.
+    /// Emoji are coloured pictures, not outlines: they cannot come out of the
+    /// UI face, which has no shape for them at all.
+    pub(crate) fn emoji_art(&self, ch: char, px: f32) -> Option<Rc<crate::emoji::Art>> {
+        self.emoji.art(ch, px)
+    }
+
+    /// 两个区域指示符拼成的那面旗：国旗是这么来的，单个字母不成图形。
+    pub(crate) fn emoji_flag(&self, first: char, second: char, px: f32) -> Option<Rc<crate::emoji::Art>> {
+        self.emoji.flag(first, second, px)
     }
 
     /// The glyph for `ch`, and how far it advances the pen at `scale`.
@@ -213,6 +227,8 @@ pub struct Fonts {
     pub mono_info: FontInfo,
     data: &'static [u8],
     index: u32,
+    /// The emoji typeface every weight of the UI face shares.
+    emoji: Rc<crate::emoji::Slot>,
 }
 
 /// A typeface's own name, version and copyright, from its name table.
@@ -259,7 +275,8 @@ impl Fonts {
         // One copy of the bytes backs every weight instance.
         let data = leak(path.as_ref())?;
         let mono_data = leak(mono.as_ref())?;
-        let face = |wght: f32| Face::new(data, index, wght);
+        let emoji = Rc::new(crate::emoji::Slot::default());
+        let face = |wght: f32| Face::new(data, index, wght, emoji.clone());
         Ok(Fonts {
             title: face(w.title)?,
             heading: face(w.heading)?,
@@ -272,17 +289,23 @@ impl Fonts {
             speed: face(w.speed)?,
             display: face(w.display)?,
             // A single-weight file: the coordinate asks for the weight it is.
-            mono: Face::new(mono_data, 0, 400.0)?,
+            mono: Face::new(mono_data, 0, 400.0, emoji.clone())?,
             info: FontInfo::read(data, index)?,
             mono_info: FontInfo::read(mono_data, 0)?,
             data,
             index,
+            emoji,
         })
     }
 
     /// An extra instance at an arbitrary `wght` coordinate.
     pub fn face(&self, weight: f32) -> Result<Face> {
-        Face::new(self.data, self.index, weight)
+        Face::new(self.data, self.index, weight, self.emoji.clone())
+    }
+
+    /// The emoji typeface every weight of the UI face shares.
+    pub fn emoji(&self) -> &Rc<crate::emoji::Slot> {
+        &self.emoji
     }
 
     /// `(tag, min, default, max)` for every variation axis.

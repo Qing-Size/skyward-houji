@@ -18,6 +18,11 @@ impl App {
                     let said = match which {
                         Slider::Brightness => texts::toast::BRIGHTNESS_KEYS,
                         Slider::Vibration => texts::toast::VIBRATION_KEYS,
+                        Slider::ThermalLimit => [
+                            "按音量键调节电池温度上限，按电源键完成",
+                            "按音量鍵調整電池溫度上限，按電源鍵完成",
+                            "Set the battery temperature limit with the volume keys, then press the power key",
+                        ],
                     };
                     self.say(l.pick(said), now);
                 }
@@ -304,38 +309,22 @@ mod tests {
     use super::*;
     use crate::app::testing::*;
 
-    #[test]
-    fn the_keys_unfold_the_search_bar_to_light_it() {
-        let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Home, W, H, PPD);
-        let span = app.frame(&f, &i).fold.expect("the home page's search bar folds").span;
-        scroll_to(&mut app, &f, span, 0);
-        app.tick(3000);
-        press(&mut app, Key::VolumeDown, 3000);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))), "a bar folded away is not in view");
-        press(&mut app, Key::VolumeUp, 3000);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))));
-        for ms in (3000..5000).step_by(8) {
-            app.tick(ms);
-        }
-        assert_eq!(app.top().1, 0.0, "the page went back up to unfold it");
-        press(&mut app, Key::Power, 5000);
-        assert_eq!(app.screen(), Screen::Search);
-    }
-
-    #[test]
+        #[test]
     fn the_keys_reach_the_last_row_of_a_home_page_grown_by_an_update_notice() {
         let f = fonts();
         let i = DeviceInfo { snapshot: SnapshotState::Snapshotted, ..info() };
-        let mut app = App::new(Screen::Home, W, SNUG, PPD);
+        // The notice adds a row, which a screen this snug leaves below the
+        // edge; the home page lost the mount row, so the screen is shorter.
+        let snug = SNUG - 560;
+        let mut app = App::new(Screen::Home, W, snug, PPD);
         let (_, y) = spot(&mut app, &f, &i, Action::Open(Screen::Reboot));
-        assert!(y > SNUG as f32, "below the screen to start with");
+        assert!(y > snug as f32, "below the screen to start with");
         light_on(&mut app, &f, &i, Stop::Hit(Action::Open(Screen::Reboot)));
         for ms in (0..3000).step_by(8) {
             app.tick(ms);
         }
         let (_, y) = spot(&mut app, &f, &i, Action::Open(Screen::Reboot));
-        assert!(y < SNUG as f32, "the page scrolled the lit row into view");
+        assert!(y < snug as f32, "the page scrolled the lit row into view");
         press(&mut app, Key::Power, 3000);
         assert_eq!(app.screen(), Screen::Reboot);
     }
@@ -361,17 +350,48 @@ mod tests {
         press(&mut app, Key::VolumeDown, 0);
         assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))), "the first press lights the first control in view");
         press(&mut app, Key::VolumeDown, 0);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))));
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))), "the device card comes next");
+        // 内置的「刷机与备份」先摆：先亮到它的标题（点一下折叠），再往里走（2026-11-27）。
+        press(&mut app, Key::VolumeDown, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::HomeFoldSection(0))), "the built-in section's title comes next");
         press(&mut app, Key::VolumeDown, 0);
         assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Install))));
+        press(&mut app, Key::VolumeDown, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Backup))));
+        press(&mut app, Key::VolumeDown, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Restore))));
+        press(&mut app, Key::VolumeDown, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::HomeFoldRest)), "then the Others title");
+        press(&mut app, Key::VolumeDown, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::FileTransfer))), "then file transfer, first of the others");
+        press(&mut app, Key::VolumeDown, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Files))), "then the file manager");
+        press(&mut app, Key::VolumeDown, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Modules))), "the modules come after the file manager");
+        press(&mut app, Key::VolumeUp, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Files))));
+        press(&mut app, Key::VolumeUp, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::FileTransfer))));
+        press(&mut app, Key::VolumeUp, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::HomeFoldRest)));
+        press(&mut app, Key::VolumeUp, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Restore))));
+        press(&mut app, Key::VolumeUp, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Backup))));
+        press(&mut app, Key::VolumeUp, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Install))));
+        press(&mut app, Key::VolumeUp, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::HomeFoldSection(0))));
         press(&mut app, Key::VolumeUp, 0);
         assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))));
         press(&mut app, Key::VolumeUp, 0);
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))));
         press(&mut app, Key::VolumeUp, 0);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Reboot))), "up from the first goes round to the last");
+        // 首页最后一行是「其他」里最后一条：高级页搬过来的「文件标签」。
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Relabel))), "up from the first goes round to the last");
         app.tick(5000);
-        let reboot = app.lit().expect("lit");
-        assert!(app.shows(&reboot, app.top().1), "scrolled into view");
+        let last = app.lit().expect("lit");
+        assert!(app.shows(&last, app.top().1), "scrolled into view");
         press(&mut app, Key::VolumeDown, 6000);
         assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))), "down from the last goes round to the first");
         app.tick(10_000);
@@ -456,7 +476,7 @@ mod tests {
         app.key(Key::Power, 3000);
         app.tick(3000 + SLIDE_MS * 2);
         assert_eq!(app.state.confirm, 1.0, "the knob stops at the end");
-        assert_eq!(app.key_up(Key::Power, 3000 + SLIDE_MS * 2), vec![Effect::Reboot(TARGETS[0])], "let go there, it confirms");
+        assert_eq!(app.key_up(Key::Power, 3000 + SLIDE_MS * 2), vec![Effect::Haptic, Effect::Reboot(TARGETS[0])], "let go there, it confirms");
         assert_eq!(app.state.confirm, 0.0);
         app.key(Key::Power, 6000);
         app.tick(6000 + SLIDE_MS);
@@ -560,7 +580,7 @@ mod tests {
     #[test]
     fn the_power_key_held_on_an_entry_opens_what_can_be_done_with_it() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        let mut app = App::new(Screen::Home, W, H, PPD);
         tap(&mut app, &f, &i, Action::Open(Screen::Files));
         app.set_files("/".into(), Ok(vec![entry("vendor", folder(12)), entry("init.rc", FileKind::File)]), LISTED);
         app.frame(&f, &i);
@@ -618,11 +638,11 @@ mod tests {
         app.tick(REPEAT_DELAY_MS - 1);
         assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Search))), "not held long enough yet");
         app.tick(REPEAT_DELAY_MS);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))));
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::About))), "held on, it goes on to the device card");
         app.tick(REPEAT_DELAY_MS + REPEAT_MS);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Install))));
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::HomeFoldSection(0))), "and on to the built-in section's title");
         app.key_up(Key::VolumeDown, REPEAT_DELAY_MS + REPEAT_MS + 10);
         app.tick(REPEAT_DELAY_MS + REPEAT_MS * 5);
-        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::Open(Screen::Install))), "let go, it stops");
+        assert_eq!(lit(&mut app, &f, &i), Some(Stop::Hit(Action::HomeFoldSection(0))), "let go, it stops");
     }
 }

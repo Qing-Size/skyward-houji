@@ -103,6 +103,8 @@ pub struct Link {
     pub mac: String,
     /// How far the network reaches, once looked at.
     pub reach: Option<Reach>,
+    /// 这组地址是手动指定的，不是 DHCP 给的。2026-11-27。
+    pub by_hand: bool,
 }
 
 impl Link {
@@ -118,6 +120,7 @@ impl Link {
             generation: None,
             mac: mac.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":"),
             reach: None,
+            by_hand: false,
         }
     }
 }

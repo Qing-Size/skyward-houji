@@ -41,6 +41,32 @@ pub mod ramdisk {
     }
 }
 
+/// Programs the phone's partitions name for its keys that a recovery of this
+/// phone cannot run: they are left out of the steps the partitions give.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Keys {
+    /// Interfaces whose programs are left out, each a prefix: a phone whose
+    /// secure element service ends as it starts in a recovery names
+    /// `android.hardware.secure_element.` here, and one whose weaver reaches
+    /// its secure element through a running Android names
+    /// `android.hardware.weaver.`. Left out, every program the partitions name
+    /// is started as they say.
+    #[serde(default)]
+    pub leave_out: Vec<String>,
+}
+
+/// How the data partition is opened: the weaver keeps every user's secret in a
+/// slot of the secure element, and where its service answers a recovery can use
+/// those slots as the phone does. Where it does not, the blob the credential
+/// service guards is taken instead.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Data {
+    /// Whether the weaver's own slots are used. Left out, the other blob is
+    /// taken, which is what a phone whose weaver cannot be reached needs.
+    #[serde(default)]
+    pub weaver_first: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceConfig {
     pub device: Device,
@@ -70,6 +96,12 @@ pub struct DeviceConfig {
     /// boot actions.
     #[serde(default)]
     pub owners: Vec<Owners>,
+    /// How the data partition is opened, where the phone's configuration says.
+    #[serde(default)]
+    pub data: Option<Data>,
+    /// Which of the programs the partitions name for the keys are left out.
+    #[serde(default)]
+    pub keys: Keys,
     #[serde(default)]
     pub wipe: Wipe,
     #[serde(default)]
@@ -110,6 +142,10 @@ pub struct Wlan {
     /// what tells a platform driver it may start the chip.
     #[serde(default)]
     pub writes: Vec<Write>,
+    /// 离开 recovery 之前写回的值，把芯片开关放回系统的驱动认识的状态，
+    /// 然后驱动才卸得掉（2026-11-23）。
+    #[serde(default)]
+    pub release: Vec<Write>,
     /// Files the driver asks the kernel's firmware loader for that are not
     /// where the loader looks in a recovery.
     #[serde(default)]
@@ -284,6 +320,11 @@ pub struct Device {
     /// System property that carries the vendor OS version.
     #[serde(default = "default_os_version_prop")]
     pub os_version_prop: String,
+    /// Whether this build offers to update itself in place. A build made for
+    /// one phone is not another's: a phone whose releases are not its own
+    /// turns this off, so the page never pulls another phone's image here.
+    #[serde(default = "default_true")]
+    pub update: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -313,11 +354,16 @@ pub struct Modules {
     /// source's modules.dep and load first.
     #[serde(default)]
     pub load: Vec<String>,
+    /// [`Self::load`] 里那些页面不等它的模块：它们的驱动各有各的硬件要探（例如
+    /// 安全元件所在的控制芯片），恢复模式没有页面用它们，就放到旁线加载，别让
+    /// 页面排在它们后面（2026-11-26，取自 Ff428/skyward-XiaoMi17ProMax-recovery）。
+    #[serde(default)]
+    pub beside: Vec<String>,
 }
 
 impl Default for Modules {
     fn default() -> Self {
-        Self { sources: default_module_sources(), load: Vec::new() }
+        Self { sources: default_module_sources(), load: Vec::new(), beside: Vec::new() }
     }
 }
 
@@ -398,6 +444,13 @@ pub struct Service {
     /// names it: it keeps these alone, through its change of user.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// The program is passed over where it is not in the partition, and
+    /// where it does not become what it says it will be, so that a phone
+    /// whose vendor keeps either of two builds of a service still starts
+    /// the one it has and the rest after it (2026-11-25, from
+    /// Kinaxie/skyward).
+    #[serde(default)]
+    pub optional: bool,
 }
 
 /// The kernel's capabilities, by the names init's capabilities lines give
@@ -795,6 +848,17 @@ mod tests {
         assert_eq!((touch.user.as_deref(), &touch.capabilities[..]), (Some("system"), &["SYS_NICE".to_string()][..]));
     }
 
+
+    #[test]
+    fn a_phone_whose_releases_are_not_its_own_does_not_offer_to_update_itself() {
+        // 构建自己更新自己这件事由配置说：认领本仓 release 的机型默认开，
+        // 不认领的（例如另仓发布的机型）写 false。
+        let off = "[device]\ncodename = \"x\"\nupdate = false\n[display]\nwidth = 1\nheight = 1\ndensity = 1\n";
+        assert!(!DeviceConfig::parse(off).unwrap().device.update);
+        let on = "[device]\ncodename = \"x\"\n[display]\nwidth = 1\nheight = 1\ndensity = 1\n";
+        assert!(DeviceConfig::parse(on).unwrap().device.update, "left on by default");
+    }
+
     #[test]
     fn each_phone_names_the_stock_build_its_recovery_is_made_on() {
         for (text, version) in [
@@ -802,7 +866,7 @@ mod tests {
             (include_str!("../../../devices/ishtar.toml"), "OS3.0.308.0.WMACNXM"),
             (include_str!("../../../devices/pudding.toml"), "OS4.0.4.0.XPCCNXM"),
             (include_str!("../../../devices/pandora.toml"), "OS4.0.4.0.XBLCNXM"),
-            (include_str!("../../../devices/popsicle.toml"), "OS4.0.4.0.XPBCNXM"),
+            (include_str!("../../../devices/popsicle.toml"), "OS4.0.6.0.XPBCNXM"),
             (include_str!("../../../devices/myron.toml"), "OS4.0.4.0.XPMCNXM"),
             (include_str!("../../../devices/songyuan.toml"), "OS4.0.4.0.XGNCNXM"),
             (include_str!("../../../devices/athens.toml"), "OS4.0.4.0.XPICNXM"),

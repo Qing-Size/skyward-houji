@@ -118,6 +118,56 @@ impl Tone {
     }
 }
 
+/// 展开/折叠用的折角：展开时朝上，折叠时朝下。
+/// 展开/折叠的圆钮：小圆底 + 中间一枚折角（折叠朝下、展开朝上）。
+/// 一枚圆钮里画一个图标：栏目上的改名、上移、下移、删除都用它，尺寸一致。
+pub fn icon_button(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, d: f32, ink: Rgba, icon: crate::icons::Icon) {
+    c.fill_circle(cx, cy, d / 2.0, t.pal.search);
+    crate::icons::glyph(c, icon, cx, cy, d * 0.52, ink);
+}
+
+pub fn fold_button(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, d: f32, collapsed: bool) {
+    let m = &t.m;
+    c.fill_circle(cx, cy, d / 2.0, t.pal.search);
+    let ink = t.pal.subtitle;
+    let (w, h, sw) = (d * 0.36, d * 0.20, m.chevron_stroke * 1.1);
+    if collapsed {
+        c.line(cx - w / 2.0, cy - h / 2.0, cx, cy + h / 2.0, sw, ink);
+        c.line(cx, cy + h / 2.0, cx + w / 2.0, cy - h / 2.0, sw, ink);
+    } else {
+        c.line(cx - w / 2.0, cy + h / 2.0, cx, cy - h / 2.0, sw, ink);
+        c.line(cx, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0, sw, ink);
+    }
+}
+
+pub fn chevron_down(c: &mut Canvas, t: &Theme, right: f32, cy: f32, color: Rgba) {
+    let m = &t.m;
+    let (w, h, sw) = (m.chevron_w, m.chevron_h, m.chevron_stroke);
+    let x0 = right - w + sw / 2.0;
+    let x1 = right - sw / 2.0;
+    c.line(x0, cy - h / 2.0 + sw / 2.0, (x0 + x1) / 2.0, cy + h / 2.0 - sw / 2.0, sw, color);
+    c.line((x0 + x1) / 2.0, cy + h / 2.0 - sw / 2.0, x1, cy - h / 2.0 + sw / 2.0, sw, color);
+}
+
+pub fn chevron_up(c: &mut Canvas, t: &Theme, right: f32, cy: f32, color: Rgba) {
+    let m = &t.m;
+    let (w, h, sw) = (m.chevron_w, m.chevron_h, m.chevron_stroke);
+    let x0 = right - w + sw / 2.0;
+    let x1 = right - sw / 2.0;
+    c.line(x0, cy + h / 2.0 - sw / 2.0, (x0 + x1) / 2.0, cy - h / 2.0 + sw / 2.0, sw, color);
+    c.line((x0 + x1) / 2.0, cy - h / 2.0 + sw / 2.0, x1, cy + h / 2.0 - sw / 2.0, sw, color);
+}
+
+/// 一个小圆钮里画一个 ×：收起/删除这类「移走」的动作用它，比一串字好看。
+pub fn cross_button(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, d: f32, fill: Rgba, ink: Rgba) {
+    let m = &t.m;
+    c.fill_circle(cx, cy, d / 2.0, fill);
+    let r = d * 0.22;
+    let sw = m.chevron_stroke;
+    c.line(cx - r, cy - r, cx + r, cy + r, sw, ink);
+    c.line(cx + r, cy - r, cx - r, cy + r, sw, ink);
+}
+
 fn chevron(c: &mut Canvas, t: &Theme, right: f32, cy: f32, color: Rgba) {
     let m = &t.m;
     let (w, h, sw) = (m.chevron_w, m.chevron_h, m.chevron_stroke);
@@ -264,6 +314,7 @@ pub struct Bar<'a> {
     /// The battery's temperature, in tenths of a degree Celsius, which the
     /// bar gives to the tenth.
     pub temp: Option<i32>,
+
 }
 
 /// The bolt past the battery while the cable is in, as the stock bar draws
@@ -299,17 +350,18 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &Fonts, bar: &Bar, ink: Rgba) {
     let cy = m.status_cy;
     // Digits carry no descender, so centre on half their height (≈0.72 em).
     c.text(&f.status, bar.clock, m.status_x, cy + m.status_px * 0.36, m.status_px, ink, None);
+
     let mut right = m.w as f32 - m.status_right;
     if let Some((level, charging)) = bar.battery {
-        if let Some(kind) = charging {
-            let x = m.w as f32 - m.status_bolt_right - m.dp(BOLT_W_DP);
-            let (art, ox, oy) = bolt(t, kind, x, cy);
-            c.lay(&art, ox, oy, 1.0);
-            right = x - m.dp(2.42);
-        }
+        // No bolt past the battery, and no box left for one: the mark in front
+        // of the charger's figure on the left says the phone is charging, and
+        // the battery takes the room the bolt had (2026-11-25).
         let (art, ox, oy) = battery(t, f, level, charging.is_some(), right, cy);
         c.lay(&art, ox, oy, 1.0);
         right -= m.dp(BATTERY_W_DP + BATTERY_CAP_DP);
+        // The charger's figure is drawn after the clock on the left: the right
+        // is crowded already -- the camera's hole took the end of the network
+        // reading (2026-11-17).
     }
     // From the battery leftwards: the network's fan, the data partition's
     // lock, the slot's badge, the temperature, and leftmost, as the stock
@@ -570,6 +622,7 @@ fn speed(c: &mut Canvas, t: &Theme, f: &Fonts, figures: &str, unit: &str, right:
 
 /// The stock bar's box for the bolt, as wide as the bolt's drawing and as
 /// tall as the bar's icons' boxes.
+
 const BOLT_W_DP: f32 = 8.0;
 const BOLT_H_DP: f32 = 20.0;
 const BATTERY_W_DP: f32 = 21.75;
@@ -1363,20 +1416,57 @@ pub fn paragraph(c: &mut Canvas, t: &Theme, f: &Fonts, y: f32, text: &str) -> f3
 /// buttons side by side, the last in the accent colour, and room under
 /// them for the gesture area. Returns the bar and where each button is on
 /// it.
-pub fn dock_bar(t: &Theme, f: &Fonts, bg: Rgba, labels: &[&str]) -> (Canvas, Vec<Rect>) {
+/// 文件管理器里那些小按钮的统一尺寸：一个高度、一个内边距、一个字号。
+/// 路径胶囊、排序控件、长按弹出的操作、多选时的底部条，全都用它，免得
+/// 同一个页面上三种大小的圆角按钮（2026-11-17）。
+pub const PILL_DP: f32 = 34.0;
+pub const PILL_PAD_DP: f32 = 15.0;
+pub const PILL_TEXT_DP: f32 = 14.0;
+pub const PILL_GAP_DP: f32 = 9.0;
+
+/// One pill at `x`, `y`: the label centred in a rounded rect as tall as the
+/// pills elsewhere on the page. Returns how wide it was drawn.
+pub fn pill(c: &mut Canvas, t: &Theme, f: &Fonts, x: f32, y: f32, label: &str, fill: Rgba, ink: Rgba) -> f32 {
     let m = &t.m;
-    let (h, pad, gap) = (m.dp(48.0), m.dp(12.0), m.dp(12.0));
-    let mut c = Canvas::new(m.w, (pad + h + m.dp(KEYBOARD_BOTTOM_DP)).ceil() as u32);
+    let (h, pad, px) = (m.dp(PILL_DP), m.dp(PILL_PAD_DP), m.dp(PILL_TEXT_DP));
+    pill_sized(c, f, x, y, h, px, pad, label, fill, ink)
+}
+
+/// The same pill, at a size the caller gives.
+pub fn pill_sized(c: &mut Canvas, f: &Fonts, x: f32, y: f32, h: f32, px: f32, pad: f32, label: &str, fill: Rgba, ink: Rgba) -> f32 {
+    let w = c.text_width(&f.value, label, px) + pad * 2.0;
+    c.fill_round_rect(x, y, w, h, h / 2.0, fill);
+    c.text_center(&f.value, label, x + w / 2.0, y + h / 2.0, px, ink);
+    w
+}
+
+/// How wide [`pill`] would draw `label`, without drawing it.
+pub fn pill_width(c: &Canvas, t: &Theme, f: &Fonts, label: &str) -> f32 {
+    c.text_width(&f.value, label, t.m.dp(PILL_TEXT_DP)) + t.m.dp(PILL_PAD_DP) * 2.0
+}
+
+pub fn dock_bar(t: &Theme, f: &Fonts, bg: Rgba, labels: &[&str]) -> (Canvas, Vec<Rect>) {
+    dock_bar_danger(t, f, bg, labels, None)
+}
+
+/// The same bar, with the button at `danger` painted as one that destroys
+/// something: the entries chosen, say.
+pub fn dock_bar_danger(t: &Theme, f: &Fonts, bg: Rgba, labels: &[&str], danger: Option<usize>) -> (Canvas, Vec<Rect>) {
+    let m = &t.m;
+    let pad = m.dp(12.0);
+    let (h, gap) = (m.dp(PILL_DP), m.dp(PILL_GAP_DP));
+    let mut c = Canvas::new(m.w, (pad * 2.0 + h + m.dp(KEYBOARD_BOTTOM_DP)).ceil() as u32);
     c.clear(bg);
-    let n = labels.len() as f32;
-    let w = (m.w as f32 - m.margin * 2.0 - gap * (n - 1.0)) / n;
     let mut rects = Vec::new();
+    let mut x = m.margin;
     for (k, label) in labels.iter().enumerate() {
-        let x = m.margin + k as f32 * (w + gap);
-        let (fill, ink) = if k + 1 == labels.len() { (t.pal.accent, Rgba::rgb(255, 255, 255)) } else { (t.pal.search, t.pal.text) };
-        c.fill_round_rect(x, pad, w, h, h / 2.0, fill);
-        c.text_center_in(&f.heading, label, x + w / 2.0, pad + h / 2.0, m.row_title_px, ink, w - h / 2.0);
+        let (fill, ink) = match danger == Some(k) {
+            true => (t.pal.search, t.pal.danger),
+            false => (t.pal.search, t.pal.text),
+        };
+        let w = pill_sized(&mut c, f, x, pad, h, m.dp(PILL_TEXT_DP), m.dp(PILL_PAD_DP), label, fill, ink);
         rects.push(Rect::new(x, pad, w, h));
+        x += w + gap;
     }
     (c, rects)
 }
@@ -1392,11 +1482,25 @@ pub fn text_field(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, text: &str) ->
     (top + t.m.dp(56.0), caret)
 }
 
+/// A text field's card `w` wide from `x`, for pages that put two on a row.
+/// Returns where the card ends, and the cursor. 2026-11-27.
+pub fn text_field_in(c: &mut Canvas, t: &Theme, f: &Fonts, x: f32, top: f32, w: f32, text: &str) -> (f32, Caret) {
+    let at = draw_text_field_in(c, t, f, x, top, w, text, false);
+    let caret = caret_over(at, |art, dx, dy| {
+        draw_text_field_in(art, t, f, x - dx, top - dy, w, text, true);
+    });
+    (top + t.m.dp(56.0), caret)
+}
+
 /// Draw the text field's card from `x0`, `top`, with its cursor if
 /// `caret`; returns where the cursor is.
 fn draw_text_field(c: &mut Canvas, t: &Theme, f: &Fonts, x0: f32, top: f32, text: &str, caret: bool) -> Rect {
+    draw_text_field_in(c, t, f, x0, top, t.m.w as f32 - t.m.margin * 2.0, text, caret)
+}
+
+fn draw_text_field_in(c: &mut Canvas, t: &Theme, f: &Fonts, x0: f32, top: f32, w: f32, text: &str, caret: bool) -> Rect {
     let m = &t.m;
-    let (w, h) = (m.w as f32 - m.margin * 2.0, m.dp(56.0));
+    let h = m.dp(56.0);
     c.fill_round_rect(x0, top, w, h, m.card_radius, t.pal.card);
     let (x, room) = (x0 + m.inner, w - m.inner * 2.0 - m.dp(4.0));
     let px = m.row_title_px;
@@ -1813,6 +1917,17 @@ const ROUND_MARK_H: f32 = 7.5;
 const ROUND_MARK_STROKE: f32 = 1.7;
 
 /// A flat settings card holding `rows`.
+/// 一行单独画进一块画布：画布高度就是这一行的高度，画在它的顶上。
+pub fn draw_one(c: &mut Canvas, t: &Theme, f: &Fonts, r: &Row) {
+    let lay = layout(c, t, f, r);
+    draw_row(c, t, f, r, &lay, 0.0, &Tone::page(t));
+}
+
+/// 一行的高度，量的时候给一块够宽的画布。
+pub fn one_height(c: &Canvas, t: &Theme, f: &Fonts, r: &Row) -> f32 {
+    layout(c, t, f, r).h
+}
+
 pub fn list(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Row]) -> Block {
     list_toned(c, t, f, top, rows, &Tone::page(t))
 }
@@ -1834,30 +1949,178 @@ pub fn list_toned(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Row], 
     Block { bottom: top + h, rows: rects }
 }
 
-/// A reading under a card's name: what it says, and what it is.
-#[derive(Clone, Debug)]
-pub struct Reading {
-    pub value: String,
-    pub caption: &'static str,
-}
-
-/// Account-style card: avatar, name and detail, the readings under the
-/// name, then optional rows. The first rect returned covers the name row.
-#[allow(clippy::too_many_arguments)]
-pub fn device_card(
+/// Account-style card: avatar, name and detail, then optional rows. The
+/// first rect returned covers the name row.
+/// The account's own row, above the phone's: its picture, cut to a circle, and
+/// the name the phone gives itself. Shown once the data partition is open,
+/// since both are kept there.
+///
+/// Gives the row's own block, which is the card of one row.
+pub fn account_card(
     c: &mut Canvas,
     t: &Theme,
     f: &Fonts,
     top: f32,
-    title: &str,
-    sub: &str,
-    readings: &[Reading],
-    rows: &[Row],
+    name: &str,
+    sub: Option<&str>,
+    avatar: Option<&crate::avatar::Avatar>,
 ) -> Block {
     let m = &t.m;
+    let (card_x, right) = (m.margin, m.w as f32 - m.margin);
+    let h = m.account_row_h;
+    c.fill_round_rect(card_x, top, right - card_x, h, m.card_radius, t.pal.card);
+    account_row(c, t, f, top, name, sub, avatar);
+    Block { bottom: top + h, rows: vec![Rect::new(card_x, top, right - card_x, h)] }
+}
+
+/// The same card, with a row of readings under the name: the slot, the data
+/// partition, the room left and the charge, as the popsicle build shows them
+/// (2026-11-25). `stats` are (value, caption), one column each.
+pub fn account_card_with_stats(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &Fonts,
+    top: f32,
+    name: &str,
+    sub: Option<&str>,
+    avatar: Option<&crate::avatar::Avatar>,
+    stats: &[(&str, Option<&str>, &str, Option<&str>)],
+) -> Block {
+    let m = &t.m;
+    let (card_x, right) = (m.margin, m.w as f32 - m.margin);
+    let row_h = m.account_row_h;
+    let stats_h = match stats.is_empty() {
+        true => 0.0,
+        false => m.dp(ACCOUNT_STATS_DP),
+    };
+    let h = row_h + stats_h;
+    c.fill_round_rect(card_x, top, right - card_x, h, m.card_radius, t.pal.card);
+    account_row(c, t, f, top, name, sub, avatar);
+    if !stats.is_empty() {
+        // Each column is as wide as what it holds, not equal and not fixed: the
+        // charge column is widest while a charger is in and no wider than the
+        // level alone once it is out, and the room left over is shared out so
+        // that none of them ends up with a gap on its right (2026-11-25).
+        let full = right - card_x;
+        let (vpx, cpx) = (m.dp(17.0), m.dp(11.5));
+        let gap = m.dp(2.0) * 2.0;
+        let measured: Vec<f32> = stats
+            .iter()
+            .map(|(value, value_tail, caption, caption_tail)| {
+                let dot = c.text_width(&f.heading, "\u{b7}", vpx);
+                let vw = c.text_width(&f.heading, value, vpx)
+                    + value_tail.map_or(0.0, |t| gap + dot + c.text_width(&f.heading, t, vpx));
+                let dot = c.text_width(&f.body, "\u{b7}", cpx);
+                let cw = c.text_width(&f.body, caption, cpx)
+                    + caption_tail.map_or(0.0, |t| gap + dot + c.text_width(&f.body, t, cpx));
+                vw.max(cw) + m.dp(24.0)
+            })
+            .collect();
+        let wanted: f32 = measured.iter().sum();
+        let (scale, spare) = match wanted > full {
+            true => (full / wanted, 0.0),
+            false => (1.0, (full - wanted) / stats.len() as f32),
+        };
+        let (value_cy, caption_cy) = (top + row_h + m.dp(24.0), top + row_h + m.dp(48.0));
+        let mut left_edge = card_x;
+        for (k, (value, value_tail, caption, caption_tail)) in stats.iter().enumerate() {
+            let wide = measured[k] * scale + spare;
+            let cx = left_edge + wide / 2.0;
+            left_edge += wide;
+            let vpx = m.dp(17.0);
+            match value_tail {
+                // The figure, a full stop, then what the charger delivers in
+                // the softer ink: the level is the figure the page is about,
+                // and the charger's is the reading after it (2026-11-25).
+                Some(tail) => {
+                    let (before, after) = (m.dp(2.0), m.dp(2.0));
+                    let (k1, k2, kd) = (
+                        c.text_width(&f.heading, value, vpx),
+                        c.text_width(&f.heading, tail, vpx),
+                        c.text_width(&f.heading, "\u{b7}", vpx),
+                    );
+                    let left = cx - (k1 + k2 + kd + before + after) / 2.0;
+                    c.text_vc(&f.heading, value, left, value_cy, vpx, t.pal.text, None);
+                    c.text_vc(&f.heading, "\u{b7}", left + k1 + before, value_cy, vpx, t.pal.text, None);
+                    c.text_vc(&f.heading, tail, left + k1 + before + kd + after, value_cy, vpx, t.pal.subtitle, None);
+                }
+                None => c.text_center_in(&f.heading, value, cx, value_cy, vpx, t.pal.text, wide - m.dp(12.0)),
+            }
+            let cpx = m.dp(11.5);
+            match caption_tail {
+                // The same shape a line up: the caption, a full stop, then what
+                // is being read, both in the softer ink (2026-11-25).
+                Some(tail) => {
+                    let (before, after) = (m.dp(2.0), m.dp(2.0));
+                    let (k1, k2, kd) = (
+                        c.text_width(&f.body, caption, cpx),
+                        c.text_width(&f.body, tail, cpx),
+                        c.text_width(&f.body, "\u{b7}", cpx),
+                    );
+                    let left = cx - (k1 + k2 + kd + before + after) / 2.0;
+                    c.text_vc(&f.body, caption, left, caption_cy, cpx, t.pal.subtitle, None);
+                    c.text_vc(&f.body, "\u{b7}", left + k1 + before, caption_cy, cpx, t.pal.subtitle, None);
+                    c.text_vc(&f.body, tail, left + k1 + before + kd + after, caption_cy, cpx, t.pal.subtitle, None);
+                }
+                None => c.text_center_in(&f.body, caption, cx, caption_cy, cpx, t.pal.subtitle, wide - m.dp(10.0)),
+            }
+        }
+    }
+    Block { bottom: top + h, rows: vec![Rect::new(card_x, top, right - card_x, row_h)] }
+}
+
+/// Room the readings take under the account row.
+const ACCOUNT_STATS_DP: f32 = 66.0;
+
+/// The account row itself: picture, name and what the phone is, with the
+/// chevron; no card behind it.
+fn account_row(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, name: &str, sub: Option<&str>, avatar: Option<&crate::avatar::Avatar>) {
+    let m = &t.m;
+    let (card_x, right) = (m.margin, m.w as f32 - m.margin);
+    let h = m.account_row_h;
+    let cy = top + h / 2.0;
+    let av = m.avatar;
+    let acx = card_x + m.avatar_inset + av / 2.0;
+    match avatar {
+        // Laid over the card as it is: what the picture leaves clear is
+        // transparent, and the card shows through where the circle is not.
+        Some(picture) => {
+            let mut small = Canvas::new(picture.size, picture.size);
+            small.data.copy_from_slice(&picture.rgba);
+            c.lay(&small, (acx - av / 2.0) as i32, (cy - av / 2.0) as i32, 1.0);
+        }
+        None => {
+            c.fill_circle(acx, cy, av / 2.0, t.pal.avatar);
+            icons::glyph(c, Icon::Phone, acx, cy, av * 0.86, t.pal.avatar_glyph);
+        }
+    }
+    let tx = card_x + m.inner + m.icon + m.icon_gap;
+    let (tt, tb) = f.heading.ink(m.account_title_px);
+    // The name over what the phone is, where that is known: two lines set in
+    // the middle of the row, as the phone's own settings page shows them.
+    match sub {
+        Some(sub) => {
+            let (st, sb) = f.body.ink(m.sub_px);
+            let block = (tb - tt) + m.sub_gap + (sb - st);
+            let ink_top = cy - block / 2.0;
+            c.text_top(&f.heading, name, tx, ink_top, m.account_title_px, t.pal.text, None);
+            // Kept clear of the chevron: a long name is cut rather than run
+            // under it.
+            let room = right - m.chevron_inset - m.inner - tx;
+            c.text_top(&f.body, sub, tx, ink_top + (tb - tt) + m.sub_gap, m.sub_px, t.pal.subtitle, Some(room));
+        }
+        None => {
+            let ink_top = cy - (tb - tt) / 2.0;
+            c.text_top(&f.heading, name, tx, ink_top, m.account_title_px, t.pal.text, None);
+        }
+    }
+    chevron(c, t, right - m.chevron_inset, cy, t.pal.chevron);
+}
+
+pub fn device_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, title: &str, sub: &str, rows: &[Row]) -> Block {
+    let m = &t.m;
     let lays: Vec<Layout> = rows.iter().map(|r| layout(c, t, f, r)).collect();
-    let readings_h = if readings.is_empty() { 0.0 } else { m.reading_h };
-    let h = m.account_row_h + readings_h + lays.iter().map(|l| l.h).sum::<f32>();
+    let h = m.account_row_h + lays.iter().map(|l| l.h).sum::<f32>();
     let (card_x, right) = (m.margin, m.w as f32 - m.margin);
     c.fill_round_rect(card_x, top, right - card_x, h, m.card_radius, t.pal.card);
 
@@ -1879,24 +2142,6 @@ pub fn device_card(
     let tone = Tone::page(t);
     let mut rects = vec![Rect::new(card_x, top, right - card_x, m.account_row_h)];
     let mut y = top + m.account_row_h;
-    // The readings share the width evenly, each a value with its caption
-    // under it, in the order they were given.
-    if !readings.is_empty() {
-        let span = (right - card_x) - m.inner * 2.0;
-        let col = span / readings.len() as f32;
-        let (vt, vb) = f.heading.ink(m.reading_px);
-        let (ct, cb) = f.body.ink(m.label_px);
-        let gap = m.sub_gap * 0.6;
-        let block = (vb - vt) + gap + (cb - ct);
-        let ink = y + (m.reading_h - block) / 2.0;
-        let room = col - m.dp(10.0);
-        for (k, r) in readings.iter().enumerate() {
-            let x = card_x + m.inner + col * k as f32;
-            c.text_top(&f.heading, &r.value, x, ink, m.reading_px, t.pal.text, Some(room));
-            c.text_top(&f.body, r.caption, x, ink + (vb - vt) + gap, m.label_px, t.pal.subtitle, Some(room));
-        }
-        y += m.reading_h;
-    }
     for (r, l) in rows.iter().zip(&lays) {
         draw_row(c, t, f, r, l, y, &tone);
         rects.push(Rect::new(card_x, y, right - card_x, l.h));
@@ -1938,6 +2183,8 @@ pub enum Caption {
     Sun,
     /// A phone between the lines of its shaking.
     Vibrate,
+    /// A thermometer, for how warm the battery may get.
+    Thermometer,
 }
 
 /// Card with a monochrome icon caption, a slider, and an optional row below.
@@ -1978,6 +2225,14 @@ pub fn slider_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, caption: Capt
                 }
             }
         }
+        Caption::Thermometer => {
+            // A stem with a bulb at its foot, and a filled column partway up:
+            // a thermometer, which is what the limit is about.
+            let bulb = lcy + m.dp(6.4);
+            c.stroke_round_rect(scx - m.dp(2.4), lcy - m.dp(8.6), m.dp(4.8), m.dp(13.0), m.dp(2.4), m.dp(1.9), t.pal.mono_icon);
+            c.fill_circle(scx, bulb, m.dp(3.6), t.pal.mono_icon);
+            c.fill_round_rect(scx - m.dp(1.0), bulb - m.dp(9.0), m.dp(2.0), m.dp(9.0), m.dp(1.0), t.pal.mono_icon);
+        }
     }
     // The caption is set like the account name, in the softer text colour.
     c.text_vc(&f.heading, label, card_x + m.dp(53.7), lcy, m.account_title_px, t.pal.info, None);
@@ -1994,10 +2249,62 @@ pub fn slider_card(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, caption: Capt
 
 /// Swipe-to-confirm control in the thick-slider style; `progress` (0 to 1)
 /// is how far the knob has been dragged. Returns the track.
-pub fn confirm(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, label: &str, danger: bool, progress: f32) -> Rect {
+/// A card over the middle of the page, holding what is about to be done and
+/// the swipe that does it: a finger finds it where it already is, rather than
+/// at the foot of a list it has to scroll to.
+///
+/// Gives the card and the swipe's track.
+pub fn confirm_card(c: &mut Canvas, t: &Theme, f: &Fonts, what: &str, label: &str, danger: bool, progress: f32) -> (Rect, Rect) {
     let m = &t.m;
     let accent = if danger { t.pal.danger } else { t.pal.accent };
-    let (x, w, h) = (m.margin, m.w as f32 - m.margin * 2.0, m.dp(56.0));
+    let w = (m.w as f32 - m.margin * 2.0).min(m.dp(560.0));
+    let x = (m.w as f32 - w) / 2.0;
+    // The words, wrapped to the card, then room for the swipe under them.
+    let lines = wrap(c, &f.value, what, m.sub_px, w - m.dp(56.0));
+    let text_h = m.sub_pitch * lines.len() as f32;
+    let h = m.dp(28.0) + text_h + m.dp(34.0) + m.dp(56.0) + m.dp(24.0);
+    let y = ((m.h as f32 - h) / 2.0).max(bar_bottom(t) + m.dp(12.0));
+    // The page under it is dimmed rather than covered: a finger sees what it
+    // is about to change.
+    c.dim(0.55);
+    c.shadow_round_rect(x, y, w, h, m.dp(22.0), m.dp(24.0), t.pal.shadow);
+    c.fill_round_rect(x, y, w, h, m.dp(22.0), t.pal.card);
+    let mut line_y = y + m.dp(24.0);
+    for line in &lines {
+        c.text_center(&f.value, line, x + w / 2.0, line_y + m.sub_pitch / 2.0, m.sub_px, t.pal.text);
+        line_y += m.sub_pitch;
+    }
+    let track = Rect::new(x + m.dp(24.0), y + h - m.dp(24.0) - m.dp(56.0), w - m.dp(48.0), m.dp(56.0));
+    c.fill_round_rect(track.x, track.y, track.w, track.h, track.h / 2.0, if danger { t.pal.danger_soft } else { t.pal.badge });
+    c.text_center(&f.heading, label, track.x + track.w / 2.0 + track.h / 4.0, track.y + track.h / 2.0, m.row_title_px, accent);
+    let k = track.h - m.dp(8.0);
+    let kcx = track.x + track.h / 2.0 + (track.w - track.h) * progress.clamp(0.0, 1.0);
+    let kcy = track.y + track.h / 2.0;
+    if progress > 0.0 {
+        c.fill_round_rect(track.x, track.y, kcx + track.h / 2.0 - track.x, track.h, track.h / 2.0, accent.with_alpha(60));
+    }
+    c.fill_circle(kcx, kcy, k / 2.0, accent);
+    let s = k * 0.3;
+    c.line(kcx - s * 0.5, kcy, kcx + s * 0.5, kcy, m.stroke, Rgba::rgb(255, 255, 255));
+    c.line(kcx + s * 0.5, kcy, kcx + s * 0.05, kcy - s * 0.45, m.stroke, Rgba::rgb(255, 255, 255));
+    c.line(kcx + s * 0.5, kcy, kcx + s * 0.05, kcy + s * 0.45, m.stroke, Rgba::rgb(255, 255, 255));
+    (Rect::new(x, y, w, h), track)
+}
+
+pub fn confirm(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, label: &str, danger: bool, progress: f32) -> Rect {
+    let m = &t.m;
+    let track = Rect::new(m.margin, top, m.w as f32 - m.margin * 2.0, m.dp(56.0));
+    confirm_in(c, t, f, track, label, danger, progress)
+}
+
+/// The same control drawn in `track` rather than across the page: a lock's
+/// knob is shorter than the screen is wide, and a caller that has already
+/// worked out where its finger has to land draws it there.
+pub fn confirm_in(c: &mut Canvas, t: &Theme, f: &Fonts, track: Rect, label: &str, danger: bool, progress: f32) -> Rect {
+    let m = &t.m;
+    let accent = if danger { t.pal.danger } else { t.pal.accent };
+    let (x, w, h) = (track.x, track.w, track.h);
+    let top = track.y;
     c.fill_round_rect(x, top, w, h, h / 2.0, if danger { t.pal.danger_soft } else { t.pal.badge });
     // The label stands between the knob at rest and the track's end.
     c.text_center_in(&f.heading, label, x + w / 2.0 + h / 4.0, top + h / 2.0, m.row_title_px, accent, w - h * 2.0);
@@ -2859,7 +3166,7 @@ pub fn keyboard_height(t: &Theme) -> f32 {
 /// key answers a touch, the gaps between keys shared out among their
 /// neighbours.
 #[allow(clippy::too_many_arguments)]
-pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: Layer, pressed: Option<Cap>, enter: &str) -> Vec<(Rect, Cap)> {
+pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: Layer, pressed: Option<Cap>, enter: &str, chinese: bool) -> Vec<(Rect, Cap)> {
     let m = &t.m;
     let w = m.w as f32;
     let (panel, key, side, ink, shadow) = if t.dark {
@@ -2933,7 +3240,9 @@ pub fn keyboard(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, top: f32, layer: 
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         match cap {
             Cap::Char(ch) => {
-                let label = if layer == Layer::Shifted { ch.to_ascii_uppercase() } else { ch };
+                // 中文页（拼音开着、要收汉字）摆大写 26 键；密码、网址页始终小写。
+                let upper = layer == Layer::Shifted || (chinese && ch.is_ascii_lowercase());
+                let label = if upper { ch.to_ascii_uppercase() } else { ch };
                 c.text_center(&f.heading, &label.to_string(), cx, cy, glyph_px, ink);
             }
             Cap::Space => c.text_center_in(&f.body, l.pick(texts::keyboard::SPACE), cx, cy, m.sub_px, ink, r.w - inset * 2.0),
@@ -3060,42 +3369,43 @@ mod tests {
     }
 
     #[test]
-    fn the_network_joined_shows_in_the_status_bar_where_the_stock_one_does() {
-        // The 17 Ultra's bar over its grey page, three pixels a dp, charging:
-        // its fan's ink from 930 to 968 and 59 to 94, its arrows' rows across
-        // 970..979, and the speed's lines from 54 to 71 and 80 to 95, ending
-        // 13 pixels short of the fan.
-        let t = Theme::light(1200, 2608, 3.0);
+    fn the_battery_takes_the_room_the_bolt_had() {
+        // The mark before the charger's figure says the phone is charging, so
+        // the bolt past the battery is gone and the battery sits at the bar's
+        // right edge whether a charger is in or not (2026-11-25).
+        let t = Theme::dark(1200, 2608, 3.0);
         let f = crate::font::bundled();
-        let draw = |mark: WlanMark| {
-            let mut c = Canvas::filled(1200, 160, t.pal.bg);
-            let bar = Bar { clock: "01:27", battery: Some((40, Some(Bolt::Charging))), wlan: Some(mark), data: None, slot: None, temp: None };
+        let draw = |charging: Option<Bolt>| {
+            let mut c = Canvas::filled(1200, 160, Rgba::rgb(0, 0, 0));
+            let bar = Bar { clock: "01:27", battery: Some((64, charging)), wlan: None, data: None, slot: None, temp: None };
             status_bar(&mut c, &t, &f, &bar, t.pal.status);
             c
         };
-        let full = WlanMark { level: 3, receiving: true, sending: true, speed: "7.02".into(), unit: "KB/s" };
-        let c = draw(full);
+        let inked = |p: &[u8]| p[0] > 40;
+        let charging = ink_box(&draw(Some(Bolt::Charging)), Rect::new(1000.0, 40.0, 200.0, 80.0), inked);
+        let quick = ink_box(&draw(Some(Bolt::Quick)), Rect::new(1000.0, 40.0, 200.0, 80.0), inked);
+        let plain = ink_box(&draw(None), Rect::new(1000.0, 40.0, 200.0, 80.0), inked);
+        assert_eq!(charging.2, quick.2, "no bolt takes room of its own: {charging:?} {quick:?}");
+        assert!((charging.2 - plain.2).abs() <= 1.0, "the battery ends where it does unplugged: {charging:?} {plain:?}");
+    }
+
+#[test]
+    fn the_network_joined_shows_in_the_status_bar_left_of_the_battery() {
+        // The bolt past the battery is gone and the battery took its room, so
+        // the marks no longer sit on the 17 Ultra's pixels: what is kept here
+        // is that the fan, the arrows and the speed are all drawn, and all of
+        // them left of the battery (2026-11-25).
+        let t = Theme::light(1200, 2608, 3.0);
+        let f = crate::font::bundled();
+        let mut c = Canvas::filled(1200, 160, t.pal.bg);
+        let mark = WlanMark { level: 3, receiving: true, sending: true, speed: "7.02".into(), unit: "KB/s" };
+        let bar = Bar { clock: "01:27", battery: Some((40, Some(Bolt::Charging))), wlan: Some(mark), data: None, slot: None, temp: None };
+        status_bar(&mut c, &t, &f, &bar, t.pal.status);
         let inked = |p: &[u8]| p[0] < 220;
-        let fan = ink_box(&c, Rect::new(920.0, 40.0, 49.0, 70.0), inked);
-        assert!((fan.0 - 930.0).abs() <= 1.0 && (fan.1 - 59.0).abs() <= 1.0 && (fan.3 - 95.0).abs() <= 1.0, "fan {fan:?}");
-        for row in [85.0, 90.0] {
-            let arrow = ink_box(&c, Rect::new(965.0, row, 20.0, 1.0), |p| p[0] < 200);
-            assert!((arrow.0 - 970.0).abs() <= 1.0 && (arrow.2 - 980.0).abs() <= 1.0, "arrow row {row}: {arrow:?}");
-        }
-        let figures = ink_box(&c, Rect::new(840.0, 45.0, 85.0, 30.0), inked);
-        let unit = ink_box(&c, Rect::new(840.0, 76.0, 85.0, 24.0), inked);
-        assert!((figures.1 - 54.0).abs() <= 1.0 && (figures.3 - 72.0).abs() <= 1.0, "figures {figures:?}");
-        assert!((unit.1 - 80.0).abs() <= 1.0 && (unit.3 - 96.0).abs() <= 1.0, "unit {unit:?}");
-        assert!((fan.0 - figures.2.max(unit.2) - 13.0).abs() <= 1.5, "the speed ends short of the fan: {figures:?} {unit:?}");
-        // A weak signal lights the slice alone, and data going neither way
-        // leaves both arrows dim, in the battery's empty grey.
-        let c = draw(WlanMark { level: 1, receiving: false, sending: false, speed: "0.00".into(), unit: "KB/s" });
-        let dim = over(t.pal.battery.empty, t.pal.bg);
-        let at = |x: u32, y: u32| Rgba::rgb(c.data[((y * 1200 + x) * 4) as usize], c.data[((y * 1200 + x) * 4 + 1) as usize], c.data[((y * 1200 + x) * 4 + 2) as usize]);
-        assert_eq!(at(954, 62), dim, "the outer arc");
-        assert_eq!(at(954, 75), dim, "the inner arc");
-        assert_eq!(at(954, 88), t.pal.status, "the slice");
-        assert_eq!((at(975, 84), at(975, 91)), (dim, dim), "the arrows");
+        let drawn = ink_box(&c, Rect::new(820.0, 45.0, 200.0, 55.0), inked);
+        assert!(drawn.2 > drawn.0 && drawn.3 > drawn.1, "the marks are drawn: {drawn:?}");
+        assert!(drawn.2 < 1030.0, "all of them left of the battery: {drawn:?}");
+        assert!((drawn.1 - 54.0).abs() <= 3.0 && (drawn.3 - 96.0).abs() <= 3.0, "at the bar's own height: {drawn:?}");
     }
 
     #[test]
@@ -3170,38 +3480,7 @@ mod tests {
         assert!(alpha(&shut, mid, keyhole) < 30 && alpha(&shut, mid - m.dp(3.0), keyhole) > 200);
     }
 
-    #[test]
-    fn the_bolts_stand_past_the_battery_as_the_stock_bar_draws_them() {
-        // The 17 Ultra's bar, three pixels a dp, charging quickly: the stock
-        // bolt covers a quarter of a pixel or more across 1069..1086 and
-        // down 60..94, and its left edge steps right at rows 76 and 85.
-        let t = Theme::dark(1200, 2608, 3.0);
-        let f = crate::font::bundled();
-        let draw = |kind| {
-            let mut c = Canvas::filled(1200, 160, Rgba::rgb(0, 0, 0));
-            let bar = Bar { clock: "01:27", battery: Some((64, Some(kind))), wlan: None, data: None, slot: None, temp: None };
-            status_bar(&mut c, &t, &f, &bar, t.pal.status);
-            c
-        };
-        // How much of a pixel the bolt covers, and the rows where its left
-        // edge steps right, each the top of a step.
-        let cover = |p: &[u8]| p[0] as f32 / t.pal.battery.bolt.a as f32;
-        let steps = |c: &Canvas| -> Vec<u32> {
-            let lefts: Vec<(u32, u32)> = (40..120)
-                .filter_map(|y| (1064..1100).find(|&x| cover(&c.data[((y * 1200 + x) * 4) as usize..]) > 0.6).map(|x| (y, x)))
-                .collect();
-            lefts.windows(2).filter(|w| w[1].1 >= w[0].1 + 3).map(|w| w[1].0).collect()
-        };
-        let quick = draw(Bolt::Quick);
-        let ink = ink_box(&quick, Rect::new(1064.0, 40.0, 36.0, 80.0), |p| cover(p) > 0.25);
-        assert_eq!(ink, (1069.0, 60.0, 1086.0, 94.0), "where the stock bolt is");
-        assert_eq!(steps(&quick), [76, 85], "two steps where the stock bolt's are");
-        let plain = draw(Bolt::Charging);
-        let ink = ink_box(&plain, Rect::new(1064.0, 40.0, 36.0, 80.0), |p| cover(p) > 0.25);
-        assert!(ink.0 >= 1068.0 && ink.2 <= 1092.0 && ((ink.1 + ink.3) / 2.0 - t.m.status_cy).abs() <= 1.0, "in the same box: {ink:?}");
-        assert_eq!(steps(&plain).len(), 1, "one step while the charger charges as it may");
-    }
-
+    
     #[test]
     fn a_list_of_choices_opens_where_the_stock_one_does_and_ticks_the_one_taken() {
         // The 17 Ultra, three pixels a dp: its row of protections spans
@@ -3461,8 +3740,8 @@ mod tests {
         let enter = |keys: &[(Rect, Cap)]| keys.iter().find(|(_, cap)| *cap == Cap::Enter).unwrap().0;
         let space = |keys: &[(Rect, Cap)]| keys.iter().find(|(_, cap)| *cap == Cap::Space).unwrap().0;
         let top = 2608.0 - keyboard_height(&t);
-        let plain = keyboard(&mut c, &t, &f, Lang::En, top, Layer::Letters, None, "Join");
-        let wide = keyboard(&mut c, &t, &f, Lang::Ru, top, Layer::Letters, None, "Расшифровка");
+        let plain = keyboard(&mut c, &t, &f, Lang::En, top, Layer::Letters, None, "Join", false);
+        let wide = keyboard(&mut c, &t, &f, Lang::En, top, Layer::Letters, None, "a-very-long-word-to-type", false);
         assert!(enter(&wide).w > enter(&plain).w && space(&wide).w < space(&plain).w);
         assert_eq!(enter(&wide).x + enter(&wide).w, enter(&plain).x + enter(&plain).w, "from the same right end");
         assert!(space(&wide).w > enter(&wide).w, "and the space bar stays the widest key");
@@ -3490,7 +3769,7 @@ mod tests {
             let enters =
                 [texts::page::DECRYPT, texts::wlan::CONNECT, texts::common::DONE, texts::search::SEARCH, texts::keyboard::ENTER, texts::keyboard::NEW_LINE];
             for enter in enters {
-                keyboard(&mut c, &t, &f, l, 1000.0, Layer::Letters, None, l.pick(enter));
+                keyboard(&mut c, &t, &f, l, 1000.0, Layer::Letters, None, l.pick(enter), false);
             }
             keypad(&mut c, &t, &f, l, 1000.0, None);
             let slides: Vec<&str> = file["confirm"].as_table().unwrap().values().map(|text| text.as_str().unwrap()).collect();

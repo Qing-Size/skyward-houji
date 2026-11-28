@@ -59,7 +59,7 @@ impl App {
             Err(why) => Check::Failed(why),
         };
         self.state.have = have;
-        if matches!(self.screen(), Screen::Advanced | Screen::Update) {
+        if self.screen() == Screen::Update {
             self.refresh();
         }
     }
@@ -107,7 +107,11 @@ mod tests {
     fn the_update_page_asks_for_the_newest_system_and_downloads_its_full_package_to_install() {
         let f = fonts();
         let i = DeviceInfo { os_version: Some("OS3.0.308.0.WMACNXM".into()), ..info() };
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        // 系统更新那条默认搬到了首页「其他」（2026-11-27）：展开再点。
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.home_sections.iter_mut().for_each(|section| section.collapsed = false);
+        app.state.home_rest_collapsed = false;
+        app.refresh();
         app.state.update_server = true;
         app.state.wlan = Some(Wlan::default());
         app.refresh();
@@ -148,7 +152,11 @@ mod tests {
     #[test]
     fn the_update_page_asks_the_server_as_it_opens_once_a_network_is_joined() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        // 系统更新那条默认搬到了首页「其他」（2026-11-27）：展开再点。
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.state.home_sections.iter_mut().for_each(|section| section.collapsed = false);
+        app.state.home_rest_collapsed = false;
+        app.refresh();
         app.state.wlan = Some(connected("Skyward"));
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Update)), vec![Effect::ReadUpdate], "a phone whose server is not known asks nothing");
         app.key(Key::Back, 0);

@@ -879,14 +879,43 @@ fn place(file: &Firmware) -> Result<()> {
 
 /// Start the supplicant on the interface, and wait for its control socket.
 fn start_supplicant(cfg: &Config, libraries: Option<&Path>) -> Result<Child> {
+    // Android 的 wpa_supplicant 启动时会自动加载 /vendor/etc/wifi/wpa_supplicant.conf
+    // 作为 overlay conf，里面强制 pmf=1。绝大多数 WPA2-only 的 AP 不支持 PMF 协商，
+    // wpa_supplicant 拿到 pmf=1 后 association 直接被 AP 拒掉（status 停在 0000），
+    // 退不回纯 WPA2。Skyward 自己写的 conf 里的 pmf=0 会被 vendor 的 pmf=1 覆盖
+    // ——wpa_supplicant 加载多个 conf 时后面的覆盖前面的。
+    //
+    // 我们的办法：在启动 supplicant 前，把 vendor conf 复制到可写目录、改掉 pmf=1、
+    // 再 bind mount 回去。erofs 只读分区本身无法写，但 bind mount 在 recovery 里
+    // 完全可行（需要 root 权限）。
     let home = Path::new(HOME);
+    let vendor_conf = Path::new("/vendor/etc/wifi/wpa_supplicant.conf");
+    if vendor_conf.exists() {
+        let ours = home.join("wpa_vendor_fix.conf");
+        let bytes = fs::read(vendor_conf)
+            .with_context(|| format!("read {}", vendor_conf.display()))?;
+        let mut fixed = String::from_utf8_lossy(&bytes).to_string();
+        if fixed.contains("pmf=1") {
+            fixed = fixed.replace("pmf=1", "pmf=0");
+            fs::write(&ours, &fixed)
+                .with_context(|| format!("write {}", ours.display()))?;
+            // 尝试 bind mount；失败也不要中止，recovery 里 mount 有时需要重试。
+            let _ = Process::new("mount")
+                .args(["--bind", ours.to_string_lossy().as_ref(), vendor_conf.to_string_lossy().as_ref()])
+                .status();
+        }
+    }
+
     let sockets = home.join("sockets");
     fs::create_dir_all(&sockets).with_context(|| format!("make {}", sockets.display()))?;
     fs::set_permissions(home, fs::Permissions::from_mode(0o755)).with_context(|| format!("open {} to the supplicant", home.display()))?;
     std::os::unix::fs::chown(&sockets, Some(WIFI), Some(WIFI)).with_context(|| format!("give {} to the supplicant", sockets.display()))?;
     fs::set_permissions(&sockets, fs::Permissions::from_mode(0o770)).with_context(|| format!("keep {} to the supplicant", sockets.display()))?;
     let settings = home.join("wpa_supplicant.conf");
-    fs::write(&settings, format!("ctrl_interface={}\nupdate_config=0\np2p_disabled=1\npmf=1\nsae_pwe=2\n", sockets.display()))
+    // wpa_supplicant 在 Android 上会同时加载 /vendor/etc/wifi/wpa_supplicant.conf
+    // 作为 overlay，里面自带 pmf=1。我们必须显式写 pmf=0 才能覆盖它——否则 WPA2-only
+    // 的 AP 会在 PMF 协商失败后直接拒 association，status 永远停在 0000。
+    fs::write(&settings, format!("ctrl_interface={}\nupdate_config=0\np2p_disabled=1\npmf=0\nsae_pwe=2\n", sockets.display()))
         .with_context(|| format!("write {}", settings.display()))?;
     fs::set_permissions(&settings, fs::Permissions::from_mode(0o644)).with_context(|| format!("open {} to the supplicant", settings.display()))?;
     let socket = sockets.join(&cfg.interface);

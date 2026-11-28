@@ -362,8 +362,8 @@ mod sys {
 
     #[derive(Default)]
     struct Parked {
-        /// Original mount point and where it waits.
-        moved: Vec<(PathBuf, PathBuf)>,
+        /// Original mount point, where it waits, and whether it is a folder.
+        moved: Vec<(PathBuf, PathBuf, bool)>,
         /// Shared mounts made private for the moves.
         privatized: Vec<PathBuf>,
     }
@@ -391,17 +391,45 @@ mod sys {
         }
         for (i, m) in top.iter().enumerate() {
             let at = Path::new(PARK).join(i.to_string());
-            fs::create_dir_all(&at).with_context(|| format!("create {}", at.display()))?;
+            // A mount may be of a file alone, as a setting a program is
+            // handed in place of the phone's own is: it moves onto a file.
+            let dir = m.mount_point.is_dir();
+            if dir {
+                fs::create_dir_all(&at).with_context(|| format!("create {}", at.display()))?;
+            } else {
+                fs::create_dir_all(PARK).with_context(|| format!("create {PARK}"))?;
+                fs::File::create(&at).with_context(|| format!("create {}", at.display()))?;
+            }
             move_mount(&m.mount_point, &at)?;
-            parked.moved.push((m.mount_point.clone(), at));
+            parked.moved.push((m.mount_point.clone(), at, dir));
         }
         Ok(parked)
     }
 
+    /// Make sure something of the kind a mount was on is at `home`, as the
+    /// recovery's own root lacks what a phone partition had there.
+    fn keep_home(home: &Path, dir: bool) -> Result<()> {
+        if dir {
+            return fs::create_dir_all(home).with_context(|| format!("make {} to keep the mount there", home.display()));
+        }
+        if let Some(parent) = home.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("make {} to keep the mount there", parent.display()))?;
+        }
+        if !home.exists() {
+            fs::File::create(home).with_context(|| format!("make {} to keep the mount there", home.display()))?;
+        }
+        Ok(())
+    }
+
     fn unpark(parked: Parked) -> Result<()> {
-        for (home, at) in &parked.moved {
+        for (home, at, dir) in &parked.moved {
+            keep_home(home, *dir)?;
             move_mount(at, home)?;
-            fs::remove_dir(at).with_context(|| format!("remove {}", at.display()))?;
+            if *dir {
+                fs::remove_dir(at).with_context(|| format!("remove {}", at.display()))?;
+            } else {
+                fs::remove_file(at).with_context(|| format!("remove {}", at.display()))?;
+            }
         }
         if !parked.moved.is_empty() {
             fs::remove_dir(PARK).with_context(|| format!("remove {PARK}"))?;
@@ -424,7 +452,7 @@ mod sys {
                 return Err(e);
             }
         };
-        if let Some((home, _)) = parked.moved.iter().find(|(home, _)| !home.is_dir()) {
+        if let Some((home, _, _)) = parked.moved.iter().find(|(home, _, _)| !home.is_dir() && !home.is_file()) {
             let home = home.clone();
             umount(target)?;
             unpark(parked)?;
@@ -478,11 +506,8 @@ mod sys {
         // What shows there now, if anything, is another mount, which park
         // left as it was.
         parked.privatized.retain(|p| p != target);
-        // What shows at `target` now may lack a folder one of them was on,
-        // as the recovery's own root lacks a phone partition's folders.
-        for (home, _) in &parked.moved {
-            fs::create_dir_all(home).with_context(|| format!("make {} to keep the mount there", home.display()))?;
-        }
+        // What shows at `target` now may lack a folder or file one of them
+        // was on, as the recovery's own root lacks a phone partition's.
         unpark(parked)
     }
 

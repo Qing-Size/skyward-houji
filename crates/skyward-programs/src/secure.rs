@@ -84,6 +84,13 @@ const WEAVERS: [(&str, Through, Option<Driver>); 3] = [
     ("weaver-service", Through::Own("vendor.goodix.hardware.secure_element_aidl.IGdxEse"), None),
 ];
 
+/// The makes of weaver the recovery does not start, by what the name of
+/// their program ends in: NXP's reads its first slot and then ends in a
+/// segmentation fault, and leaves the secure element's channel it read
+/// through spoiled for every program after it. The recovery asks the
+/// applet itself instead, as `skyward_crypto` does where no weaver runs.
+const UNSTARTED: [&str; 1] = [".nxp-qti"];
+
 /// Qualcomm's programs between Android and the secure world, by the names
 /// of their files: the one that registers the listeners the secure world
 /// calls back through, with the property it sets once they are registered,
@@ -179,7 +186,8 @@ enum Ready {
 /// phone with a weaver, load the driver its secure element takes, start
 /// what the weaver reaches its secure element through, serving Android's
 /// secure element service where that is what it goes through, and the
-/// weaver; and start the boot control.
+/// weaver, unless it is of a make the recovery does not start; and start
+/// the boot control.
 pub fn steps(phone: &Phone, charging: bool, verifying: bool) -> Result<Vec<Step>> {
     let mut out = Vec::new();
     let start = |out: &mut Vec<Step>, started: Started| out.push(Step::Start(Box::new(started)));
@@ -320,7 +328,7 @@ pub fn programs(steps: &[Step]) -> Vec<&Started> {
 
 /// What starting the weaver takes: the driver of the chip its secure
 /// element is in, what it reaches the secure element through, and then the
-/// weaver itself.
+/// weaver itself, unless it is of a make the recovery does not start.
 fn weaver(phone: &Phone) -> Result<Vec<Step>> {
     let mut out = Vec::new();
     let program = behind(phone, "the weaver", WEAVER, |file| file.contains("weaver-service"))?;
@@ -354,6 +362,9 @@ fn weaver(phone: &Phone) -> Result<Vec<Step>> {
             }
             out.push(Step::ServeElements);
         }
+    }
+    if UNSTARTED.iter().any(|ending| file.ends_with(ending)) {
+        return Ok(out);
     }
     let mut weaver = started(phone, program, Ready::Service(WEAVER.into()), besides(phone, program, WEAVER, |_| false));
     weaver.anew = *through == Through::ElementService;

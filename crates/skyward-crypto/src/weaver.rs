@@ -96,6 +96,91 @@ fn value(read: &mut Reader) -> Result<Vec<u8>> {
     }
 }
 
+/// The name of the applet the weaver's slots are in.
+const APPLET: [u8; 7] = [0xa0, 0x00, 0x00, 0x03, 0x96, 0x10, 0x10];
+
+/// The applet's own instruction that reads a slot. A command to the applet
+/// is its class, this instruction, two parameters, then the slot's number
+/// and the key and a closing byte.
+const APPLET_READ: u8 = 0x06;
+
+/// How long the applet's keys are, and the values it keeps.
+pub const APPLET_KEY_BYTES: usize = 16;
+const APPLET_VALUE_BYTES: usize = 16;
+
+/// The byte the applet answers a read with: the read went through and the
+/// value follows; the key was the wrong one, and the secure element counts
+/// the try against the slot; or the secure element is holding off further
+/// tries.
+const APPLET_OK: u8 = 0x00;
+const APPLET_WRONG_KEY: u8 = 0x7f;
+const APPLET_THROTTLE: u8 = 0x76;
+
+/// The command that reads slot `slot` with `key` from the applet itself,
+/// as NXP's libese_weaver frames it.
+fn applet_read_command(slot: u32, key: &[u8]) -> Vec<u8> {
+    let mut command = vec![0x80, APPLET_READ, 0x00, 0x00, 1 + 4 + APPLET_KEY_BYTES as u8];
+    command.extend_from_slice(&slot.to_be_bytes());
+    command.extend_from_slice(key);
+    command.push(0x00);
+    command
+}
+
+/// What the applet answered a read with: the value the slot keeps, or why
+/// it kept it back. The answer ends with 90 00, and begins with one byte
+/// that says how the read went and then the value.
+fn applet_value(answer: &[u8]) -> Result<Vec<u8>> {
+    let body = answer.strip_suffix(&[0x90, 0x00]).with_context(|| format!("the weaver's applet answered {answer:02x?}"))?;
+    let (said, value) = body.split_first().context("the weaver's applet answered nothing of how the read went")?;
+    match *said {
+        APPLET_OK => {
+            anyhow::ensure!(value.len() == APPLET_VALUE_BYTES, "the weaver's applet answered a value of {} bytes, not {APPLET_VALUE_BYTES}", value.len());
+            Ok(value.to_vec())
+        }
+        APPLET_WRONG_KEY => bail!("the secure element does not recognise that credential"),
+        APPLET_THROTTLE => bail!("the secure element is holding off further tries"),
+        other => bail!("the weaver's applet answered a read with {other:02x}"),
+    }
+}
+
+/// Read slot `slot` of the weaver through the secure element itself, where
+/// the phone's own weaver is not started: the applet is selected on the
+/// basic channel and asked there.
+#[cfg(target_os = "android")]
+pub fn read_through_element(binder: &skyward_binder::driver::Binder, slot: u32, key: &[u8]) -> Result<Vec<u8>> {
+    use skyward_omapi::apdu::{select, selected, Selected};
+    use skyward_omapi::element::Element;
+
+    anyhow::ensure!(key.len() == APPLET_KEY_BYTES, "a weaver key is {APPLET_KEY_BYTES} bytes, not {}", key.len());
+    let name = embedded_element(binder)?;
+    let element = Element::find(binder, &name)?.with_context(|| format!("nothing has registered the secure element {name}"))?;
+    // The applet is selected by a command on the basic channel, which is
+    // the one the chip has open once it is powered up: a read may be
+    // asked again after a wrong credential, so nothing here has to be
+    // opened anew each time.
+    let command = select(&APPLET, 0, false).expect("the basic channel has a number");
+    let answer = element.transmit(&command).context("select the weaver's applet")?;
+    if selected(&answer) != Selected::Another {
+        bail!("the weaver's applet is not there: it answered the select with {answer:02x?}");
+    }
+    let answer = element.transmit(&applet_read_command(slot, key)).with_context(|| format!("read slot {slot} of the weaver's applet"))?;
+    applet_value(&answer)
+}
+
+/// The name the phone's built-in secure element is registered under, which
+/// is eSE and then a number.
+#[cfg(target_os = "android")]
+fn embedded_element(binder: &skyward_binder::driver::Binder) -> Result<String> {
+    let prefix = format!("{}/", skyward_omapi::element::INTERFACE);
+    let mut names: Vec<String> = skyward_binder::service::names(binder)?
+        .into_iter()
+        .filter_map(|name| name.strip_prefix(prefix.as_str()).map(str::to_string))
+        .filter(|name| name.starts_with("eSE"))
+        .collect();
+    names.sort();
+    names.into_iter().next().context("no service of the phone's built-in secure element has registered")
+}
+
 /// The phone's weaver, as this program talks to it.
 #[cfg(target_os = "android")]
 pub struct Weaver<'a> {
@@ -220,6 +305,27 @@ mod tests {
             p.i32(1);
         });
         assert!(value(&mut Reader::new(&failed)).is_err());
+    }
+
+    #[test]
+    fn the_applets_read_asks_the_slot_by_number_with_the_key() {
+        let command = applet_read_command(3, &[7; 16]);
+        assert_eq!(&command[..5], &[0x80, APPLET_READ, 0x00, 0x00, 0x15], "the class, the instruction and how much data follows");
+        assert_eq!(&command[5..9], &3u32.to_be_bytes(), "the slot, the way the applet reads it");
+        assert_eq!(&command[9..25], &[7; 16]);
+        assert_eq!(command[25], 0x00, "the closing byte");
+    }
+
+    #[test]
+    fn the_applet_answers_a_read_with_a_tag_and_the_value() {
+        let mut read = vec![APPLET_OK];
+        read.extend_from_slice(&[0xAB; 16]);
+        read.extend_from_slice(&[0x90, 0x00]);
+        assert_eq!(applet_value(&read).unwrap(), vec![0xAB; 16]);
+        assert_eq!(applet_value(&[APPLET_WRONG_KEY, 0x90, 0x00]).unwrap_err().to_string(), "the secure element does not recognise that credential");
+        assert_eq!(applet_value(&[APPLET_THROTTLE, 0x90, 0x00]).unwrap_err().to_string(), "the secure element is holding off further tries");
+        assert!(applet_value(&[APPLET_OK, 0x00, 0x90, 0x00]).is_err(), "a value of the wrong length");
+        assert!(applet_value(&[APPLET_OK; 19]).is_err(), "no status word");
     }
 
     #[test]
